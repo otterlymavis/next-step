@@ -6,8 +6,8 @@
   const UI_KEY = 'nextstep.ui'; // open screen and unsent drafts, so a process survives the app closing
   const PREV_KEY = 'nextstep.state.prev';
   const UNREADABLE_PREFIX = 'nextstep.unreadable.';
-  const APP_VERSION = 9; // keep in step with VERSION in sw.js
-  const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review', 'reminders']);
+  const APP_VERSION = 10; // keep in step with VERSION in sw.js
+  const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review', 'notes']);
 
   // Line icons (24×24, stroke).
   const ICONS = {
@@ -73,7 +73,6 @@
   let longAbsenceHandled = false;
   let askNextDismissed = false;
   let updateReady = false; // a newer version has been installed in the background
-  let mascotShown = false; // Pip pops up at most once per app open
   let timer = null;
   const app = document.getElementById('app');
   const now = () => Date.now();
@@ -188,7 +187,7 @@
   const navBtn = (ic, label, onclick, cls) => h('button', { class: 'nav-btn press' + (cls ? ' ' + cls : ''), onclick: tap(onclick) }, icon(ic), label);
   // Back abandons the current form, so its drafts go too.
   const back = (to) => navBtn('back', 'Back', () => { clearDrafts(); go(to || 'home'); });
-  const menuBtn = () => navBtn('menu', 'Menu', () => go('menu'));
+  const menuBtn = () => navBtn('menu', 'More', () => go('menu'));
   // Same layout on every screen: left = way back (or Today), centre = where you are, right = Menu.
   const topbar = (left, title, right) => h('div', { class: 'topbar' },
     left || h('span'),
@@ -266,11 +265,6 @@
     if (inp) setTimeout(() => inp.focus(), 50);
   }
 
-  function todayDots() {
-    const t = C.today(S, now());
-    return t.items.map((i) => h('span', { class: 'dot' + (i.outcome === 'finished' || i.outcome === 'progress' ? ' full' : '') }));
-  }
-
   function applyPrefs() {
     const root = document.documentElement;
     if (S && S.prefs.theme !== 'auto') root.setAttribute('data-theme', S.prefs.theme);
@@ -289,7 +283,8 @@
     applyPrefs();
     const screen = screenFor();
     const bar = screen.querySelector('.topbar');
-    if (bar && view.name !== 'recover') bar.after(reminderStrip());
+    const quietHome = view.name === 'home' && !C.currentAttempt(S);
+    if (bar && view.name !== 'recover' && !quietHome) bar.after(reminderStrip());
     app.replaceChildren(screen);
     applyDrafts(app);
     UI.view = RESUMABLE.has(view.name) ? view : null;
@@ -312,115 +307,22 @@
       case 'progress': return progressHub();
       case 'goals': return goalsScreen();
       case 'goal': return goalEditScreen();
-      case 'saved': return savedThoughtsScreen();
-      case 'backup': return backupScreen();
       case 'review': return reviewScreen();
-      case 'settings': return settingsScreen();
-      case 'reminders': return remindersScreen();
+      case 'notes': case 'reminders': case 'saved': return notesScreen();
+      case 'settings': case 'backup': return settingsScreen();
       default: return homeScreen();
     }
   }
 
-  // ---------- game layer ----------
+  // ---------- game layer: points, levels, streaks and badges, shown after Finish and in Progress ----------
 
-  // Claims today's quest and any new milestones; returns what was earned.
-  function collectRewards() {
-    if (!game()) return { quest: 0, milestones: [] };
-    const quest = C.claimQuest(S, now());
-    const milestones = C.checkMilestones(S, now());
-    return { quest, milestones };
-  }
-
-  // Shows earned rewards as a short confirmation (used where there is no Saved screen).
-  function announce(r) {
-    if (r.milestones.length) toast('Milestone: ' + r.milestones.map((m) => m.icon + ' ' + m.name).join(', '), 'check');
-    else if (r.quest) toast('Daily quest done: +' + r.quest + ' points', 'check');
-  }
-
-  function gameBar() {
-    if (!game()) return null;
-    const st = C.streaks(S, now());
-    const lv = C.levelInfo(C.totalPoints(S));
-    const streakText = st.current ? '🔥 ' + st.current + '-day streak' : '🔥 Start today for a streak';
-    return h('button', { class: 'gamebar press hide-in-focus', onclick: tap(() => go('progress')) },
-      h('span', {}, streakText),
-      h('span', {}, '⭐ ' + lv.points + ' pts · Level ' + lv.level));
-  }
-
-  // Where this step sits among the goal's known steps.
-  function stepMapEl(goalId) {
-    const m = C.stepMap(S, goalId);
-    if (m.total < 2) return null;
-    const dots = [];
-    for (let i = 1; i <= m.total; i++) dots.push(h('span', { class: 'sm-dot' + (i < m.position ? ' done' : i === m.position ? ' here' : '') }));
-    return h('div', { class: 'stepmap', 'aria-label': 'Step ' + m.position + ' of ' + m.total + ' known steps' },
-      h('div', { class: 'sm-dots' }, dots), h('span', {}, 'Step ' + m.position + ' of ' + m.total));
+  function newBadges() {
+    return game() ? C.checkMilestones(S, now()) : [];
   }
 
   function switchRow(ic, title, desc, on, onToggle) {
     return h('button', { class: 'switch-row press', role: 'switch', 'aria-checked': String(!!on), onclick: tap(onToggle) },
       icon(ic), h('div', { class: 'grow' }, h('div', {}, title), h('div', { class: 'muted' }, desc)), h('span', { class: 'switch' }));
-  }
-
-  // ---------- Pip, the mascot: pops up on Home at most once per open, never during a task ----------
-
-  function pipMessage() {
-    const st = C.streaks(S, now());
-    const q = C.dailyQuest(S, now());
-    if (welcome === 'back' || welcome === 'long') return 'Welcome back! Your place is saved. There is nothing to catch up on.';
-    if (st.current >= 2 && !st.startedToday) return 'Your ' + st.current + '-day streak is still going. One start today keeps it alive.';
-    if (C.canSpin(S, now())) return 'Your daily spin is ready on the Progress screen.';
-    if (!q.claimed) return "Today's quest: " + q.text + ' (+' + q.bonus + ' points).';
-    if (!S.attempts.length) return "Hi, I'm Pip. Press Start and I'll keep score.";
-    return 'Quest done for today. Anything more is a bonus.';
-  }
-
-  // An inline card at the top of Home, never a pop-up over content.
-  function pipCard() {
-    if (!game() || !S.prefs.mascot || mascotShown) return null;
-    const card = h('div', { class: 'mascot hide-in-focus', role: 'note' },
-      h('div', { class: 'pip', 'aria-hidden': 'true' }, '🦉'),
-      h('div', { class: 'grow' }, h('b', {}, 'Pip: '), pipMessage()),
-      h('button', { class: 'textlink press', onclick: tap(() => { mascotShown = true; card.remove(); }) }, 'Hide Pip'));
-    return card;
-  }
-
-  // ---------- daily spin ----------
-
-  function openSpin() {
-    sheet('spin', 'Daily spin', (close) => {
-      const n = C.SPIN_PRIZES.length;
-      const seg = 360 / n;
-      const parts = C.SPIN_PRIZES.map((p, i) => {
-        const a0 = (i * seg - 90) * Math.PI / 180, a1 = ((i + 1) * seg - 90) * Math.PI / 180, am = ((i + 0.5) * seg - 90) * Math.PI / 180;
-        const x0 = 50 + 48 * Math.cos(a0), y0 = 50 + 48 * Math.sin(a0), x1 = 50 + 48 * Math.cos(a1), y1 = 50 + 48 * Math.sin(a1);
-        return '<path d="M50 50 L' + x0.toFixed(2) + ' ' + y0.toFixed(2) + ' A48 48 0 0 1 ' + x1.toFixed(2) + ' ' + y1.toFixed(2) + ' Z" fill="hsl(' + (i * 60) + ' 40% var(--tint-l))" stroke="var(--line)"/>' +
-          '<text x="' + (50 + 32 * Math.cos(am)).toFixed(2) + '" y="' + (50 + 32 * Math.sin(am)).toFixed(2) + '" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" fill="var(--text)">+' + p + '</text>';
-      }).join('');
-      const wheel = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      wheel.setAttribute('viewBox', '0 0 100 100');
-      wheel.setAttribute('class', 'wheel');
-      wheel.setAttribute('aria-hidden', 'true');
-      wheel.innerHTML = parts;
-      const result = h('p', { class: 'muted', style: 'text-align:center;margin-top:12px', role: 'status' }, 'One spin a day, unlocked by your first start.');
-      const go2 = h('button', { class: 'primary press', onclick: tap(() => {
-        const r = C.spin(S, now());
-        if (!r) return;
-        save();
-        go2.disabled = true;
-        const target = 360 * 4 + (360 - (r.index + 0.5) * seg);
-        const done = () => {
-          result.textContent = 'You won ' + r.points + ' points!';
-          go2.replaceWith(primary('Done', () => { close(); render(); }, 'check'));
-          toast('+' + r.points + ' points from your spin', 'check');
-        };
-        if (reducedMotion()) { wheel.style.transform = 'rotate(' + target + 'deg)'; done(); return; }
-        wheel.style.transition = 'transform 2.4s cubic-bezier(.15,.8,.25,1)';
-        wheel.style.transform = 'rotate(' + target + 'deg)';
-        setTimeout(done, 2450);
-      }) }, '🎡 Spin the wheel');
-      return [h('div', { class: 'wheel-wrap' }, h('div', { class: 'pointer', 'aria-hidden': 'true' }, '▼'), wheel), result, h('div', { class: 'spaced' }, go2)];
-    });
   }
 
   // ---------- reminder strip: pinned, still, changes only when tapped ----------
@@ -446,12 +348,6 @@
 
   // ---------- home ----------
 
-  function homeLeft() {
-    const t = C.today(S, now());
-    if (!t.starts) return h('span');
-    return h('button', { class: 'nav-btn press hide-in-focus', onclick: tap(() => go('progress')) }, h('span', { class: 'dots' }, todayDots()), 'Today');
-  }
-
   function homeScreen() {
     const cur = C.currentAttempt(S);
     if (cur && C.actionById(S, cur.actionId)) return progressScreen(cur);
@@ -469,37 +365,27 @@
     const g = C.goalById(S, rec.goalId);
     const cp = C.checkpointFor(S, rec.id);
     const dl = g.deadline && C.daysUntil(g.deadline, now()) >= 0 ? (g.deadlineLabel || 'Due') + ' ' + C.formatDate(g.deadline) : '';
-    const greeting = welcome === 'back' || welcome === 'long' ? h('p', { class: 'muted', style: 'margin:0 0 12px;text-align:center' }, 'Welcome back') : null;
+    const detail = [cp ? 'Saved place: ' + cp : '', dl].filter(Boolean).join(' · ');
     const startHint = C.isUrl(rec.resource) ? 'Opens your link' : !rec.resource && !rec.resourceAsked ? 'Asks where the material is, once' : rec.resource ? 'Shows: ' + rec.resource : '';
 
-    const card = h('div', { class: 'card stack', style: hueStyle(g) },
-      emoji(g),
-      h('h1', { style: 'margin-top:10px' }, g.name),
+    // Home shows only the task and Start; everything else lives under More.
+    const task = h('div', { class: 'task stack' },
+      h('h1', {}, g.name),
       h('p', { class: 'action' }, rec.text),
-      h('div', { class: 'chips' },
-        cp ? h('span', { class: 'chip' }, icon('bookmark'), cp) : null,
-        h('span', { class: 'chip' }, icon('timer'), rec.small),
-        dl ? h('span', { class: 'chip' }, icon('flag'), dl) : null),
-      stepMapEl(g.id));
-    enableSwipe(card, () => go('another'));
-    // One message at a time: Pip only speaks when there is no other notice.
-    const noteList = notices();
-    const pip = noteList.length ? null : pipCard();
-    view.after = () => { delete view.after; if (pip) mascotShown = true; };
+      detail ? h('p', { class: 'muted' }, detail) : null);
+    enableSwipe(task, () => go('another'));
 
     return h('section', { class: 'screen' },
-      topbar(homeLeft(), null),
-      h('div', { class: 'hide-in-focus' }, noteList),
-      gameBar(),
+      topbar(null, null),
+      notices(),
       h('div', { class: 'center' },
-        pip ? pip : greeting,
-        card,
-        h('div', { class: 'stack', style: 'margin-top:14px' }, bigButton('play', 'Start', startHint, () => onStart(rec), true)),
-        h('div', { class: 'actions-row hide-in-focus' },
-          pill('smaller', 'Make it smaller', () => go('smaller', { actionId: rec.id })),
-          pill('shuffle', 'Pick another', () => go('another'))),
-        ));
+        welcome === 'back' || welcome === 'long' ? h('p', { class: 'muted', style: 'text-align:center;margin-bottom:10px' }, 'Welcome back') : null,
+        task,
+        h('div', { class: 'stack', style: 'margin-top:36px' }, bigButton('play', 'Start', startHint, () => onStart(rec), true))),
+      h('div', { class: 'bottom stack hide-in-focus' }, link2('Not this one', () => go('another'))));
   }
+
+  const link2 = (label, onclick) => h('button', { class: 'textlink press', onclick: tap(onclick) }, label, ' →');
 
   // Horizontal swipe on the card; vertical scrolling is left alone. Buttons offer the same action.
   function enableSwipe(el, onSwipe) {
@@ -537,11 +423,6 @@
         tl('Update now', () => location.reload())));
       return out; // one notice at a time
     }
-    if (S.exampleNote) {
-      out.push(note('pencil', 'These are example goals.',
-        tl('Edit goals', () => { S.exampleNote = false; save(); go('goals'); }),
-        tl('Hide note', () => act(() => { S.exampleNote = false; }))));
-    }
     for (const g of C.passedDeadlines(S, now())) {
       out.push(note('flag', (g.deadlineLabel || 'Deadline') + ' for ' + g.name + ' was ' + C.formatDate(g.deadline) + '.',
         tl('Change date', () => go('goal', { goalId: g.id })),
@@ -553,7 +434,7 @@
         tl('Open', () => go('review', { day })),
         tl('Not now', () => act(() => S.reviewsSeen.push(day)))));
     }
-    return out;
+    return out.slice(0, 1); // one notice at a time
   }
 
   function onStart(a) {
@@ -569,11 +450,10 @@
       window.open(a.resource.trim(), '_blank', 'noopener');
       C.recordLaunch(S, att.id, now());
     }
-    const r = collectRewards();
+    newBadges();
     save();
     go('home');
-    if (r.milestones.length || r.quest) announce(r);
-    else toast('Started' + (game() ? ': +' + C.POINTS.start + ' points' : ''), 'play');
+    toast('Started', 'play');
   }
 
   // START asks for a missing resource once.
@@ -603,7 +483,7 @@
       toast('Next step saved', 'check');
     });
     return h('section', { class: 'screen' },
-      topbar(homeLeft(), null),
+      topbar(null, null),
       h('div', { class: 'center stack' },
         emoji(g),
         h('h1', { style: 'margin:14px 0 6px' }, g.name),
@@ -618,7 +498,7 @@
     const resting = S.goals.filter((g) => g.status !== 'active');
     const activeNoStep = C.goalsNeedingNext(S);
     return h('section', { class: 'screen' },
-      topbar(homeLeft(), null),
+      topbar(null, null),
       h('div', { class: 'center' },
         h('div', { class: 'stack' },
           h('div', { style: 'font-size:52px' }, '🌱'),
@@ -732,13 +612,12 @@
     return h('section', { class: 'screen', style: hueStyle(g) },
       topbar(h('span'), h('span', {}, h('span', { class: 'dot-static' }), ' In progress')),
       h('div', { class: 'center stack' },
-        emoji(g),
-        h('h2', { style: 'margin:12px 0 2px' }, a.text),
+        h('p', { class: 'muted' }, g.name),
+        h('h2', { style: 'margin:4px 0 2px' }, a.text),
         h('div', { class: 'chips', style: 'margin-top:8px' },
           cp ? h('span', { class: 'chip' }, icon('bookmark'), cp) : null,
           a.resource && !C.isUrl(a.resource) ? h('span', { class: 'chip' }, icon('link'), a.resource) : null,
-          a.target ? h('span', { class: 'chip' }, icon('target'), a.target) : null),
-        stepMapEl(g.id),
+          null),
         h('div', { class: 'elapsed', 'aria-label': mins() + ' minutes since you started' }, elapsedNum, h('small', {}, 'min')),
         h('p', { class: 'muted', style: 'margin:0 0 20px' }, 'since you started'),
         checkinSlot,
@@ -763,12 +642,12 @@
       const r = C.finish(S, att.id, outcome, opts, now());
       clearDrafts();
       if (!r.changed) return go('home');
-      const rewards = collectRewards();
+      const badges = newBadges();
       save();
       const levelAfter = C.levelInfo(C.totalPoints(S)).level;
       const afterView = {
         outcome, goalId: att.goalId, nextId: r.next ? r.next.id : null, deferred: !!(opts && opts.deferred),
-        earned: C.attemptPoints(att), quest: rewards.quest, milestones: rewards.milestones.map((m) => m.icon + ' ' + m.name),
+        earned: C.attemptPoints(att), milestones: badges.map((m) => m.icon + ' ' + m.name),
         levelUp: levelAfter > levelBefore ? levelAfter : 0,
       };
       if (C.thoughtsFor(S, att.id).length) go('thoughts', { attemptId: att.id, total, then: afterView });
@@ -835,14 +714,16 @@
         pill('trash', 'Delete', () => { act(() => C.deleteThought(S, t.id)); toast('Deleted', 'trash'); }, 'small')));
   }
 
+  // One line of points and streak, plus any new badge or level.
   function rewardsPanel(v) {
     if (!game()) return null;
-    const lines = [h('div', { class: 'reward-head' }, h('span', { class: 'pip', 'aria-hidden': 'true' }, '🦉'), h('b', {}, '+' + ((v.earned || 0) + (v.quest || 0)) + ' points'))];
-    if (v.quest) lines.push(h('div', {}, '🎯 Daily quest done: +' + v.quest));
-    (v.milestones || []).forEach((m) => lines.push(h('div', {}, '✨ Milestone: ' + m)));
-    if (v.levelUp) lines.push(h('div', {}, '⭐ Level ' + v.levelUp + ': ' + C.levelInfo(C.totalPoints(S)).name));
-    const spinBtn = C.canSpin(S, now()) ? h('div', {}, pill('arrow', '🎡 Daily spin ready', openSpin, 'small')) : null;
-    return h('div', { class: 'rewards hide-in-focus' }, lines, spinBtn);
+    const st = C.streaks(S, now());
+    const parts = ['+' + (v.earned || 0) + ' points'];
+    if (st.current) parts.push('🔥 ' + st.current + '-day streak');
+    return h('div', { class: 'rewards-line hide-in-focus' },
+      h('p', {}, parts.join(' · ')),
+      (v.milestones || []).map((m) => h('p', {}, 'New badge: ' + m)),
+      v.levelUp ? h('p', {}, '⭐ Level ' + v.levelUp + ': ' + C.levelInfo(C.totalPoints(S)).name) : null);
   }
 
   function afterScreen() {
@@ -886,7 +767,6 @@
           cp ? h('span', { class: 'chip' }, icon('bookmark'), 'Restart at: ' + cp) : null,
           v.outcome === 'finished' && next ? h('span', { class: 'chip' }, icon('arrow'), 'Next: ' + next.text) : null,
           v.outcome === 'finished' && !next ? h('span', { class: 'chip' }, icon('clock'), 'Next step: decide next time') : null),
-        h('div', { class: 'dots center-row hide-in-focus', 'aria-label': 'Today' }, todayDots()),
         rewardsPanel(v),
         h('div', { class: 'actions-row', style: 'margin-top:30px' },
           canContinue ? h('button', { class: 'primary press', style: 'width:auto;padding:14px 20px', onclick: tap(() => onStart(next)) }, icon('play'), continueLabel) : null,
@@ -907,21 +787,9 @@
       const g = C.goalById(S, a.goalId);
       return tile(emoji(g, 'sm'), g.name, () => choose(a), { wide: true, sub: a.text, style: hueStyle(g) });
     });
-    // Rolls through the options for about a second, then picks one.
-    const pickForMe = () => {
-      const pick = Math.floor(Math.random() * alts.length);
-      if (reducedMotion()) return choose(alts[pick]);
-      const steps = alts.length * 3 + pick;
-      let i = 0;
-      const t = setInterval(() => {
-        altTiles.forEach((el, k) => el.classList.toggle('lit', k === i % alts.length));
-        if (i++ >= steps) { clearInterval(t); setTimeout(() => choose(alts[pick]), 350); }
-      }, 90);
-    };
     return h('section', { class: 'screen' },
-      topbar(back(), view.switching ? 'Switch task' : 'Pick another'),
+      topbar(back(), view.switching ? 'Switch task' : 'Not this one'),
       h('div', { class: 'center' },
-        alts.length > 1 ? h('div', { class: 'actions-row', style: 'margin:0 0 14px' }, pill('shuffle', '🎲 Pick for me', pickForMe)) : null,
         alts.length
           ? h('div', { class: 'tiles one' }, altTiles)
           : h('div', { class: 'stack' }, h('div', { style: 'font-size:44px' }, '🍃'), h('h2', { style: 'margin-top:8px' }, 'That is everything for now')),
@@ -970,20 +838,17 @@
     const kept = S.thoughts.filter((t) => t.status === 'kept').length;
     const t = C.today(S, now());
     return h('section', { class: 'screen' },
-      topbar(back(), 'Menu', null),
+      topbar(back(), 'More', null),
       h('div', { class: 'tiles' },
-        tile('calendar', game() ? 'Progress' : 'Today', () => go('progress'), { sub: game() ? 'Level ' + C.levelInfo(C.totalPoints(S)).level + ' · ' + C.totalPoints(S) + ' pts' : t.starts ? t.starts + ' started' : 'Nothing yet' }),
         tile('target', 'Goals', () => go('goals'), { sub: S.goals.filter((g) => g.status === 'active').length + ' active' }),
-        tile('bulb', 'Thoughts', () => go('saved'), { sub: kept ? kept + ' saved' : 'None saved' }),
-        tile('chart', 'Look back', () => go('review'), { sub: 'Your pattern' }),
-        tile('save', 'Backup', () => go('backup'), { sub: 'Export, restore' }),
-        tile('message', 'Reminders', () => go('reminders'), { sub: S.reminders.length ? S.reminders.length + ' pinned' : 'None yet' }),
-        tile('sliders', 'Display', () => go('settings'), { sub: 'Theme, focus mode' })),
+        tile('calendar', 'Progress', () => go('progress'), { sub: t.starts ? t.starts + ' started today' : 'Today and look back' }),
+        tile('message', 'Notes', () => go('notes'), { sub: S.reminders.length + ' reminders, ' + kept + ' thoughts' }),
+        tile('sliders', 'Settings', () => go('settings'), { sub: 'Display and backup' })),
       h('p', { class: 'muted', style: 'text-align:center;margin-top:18px' }, 'App version ' + APP_VERSION),
       updateReady ? h('div', { class: 'actions-row' }, pill('refresh', 'Update to the new version', () => location.reload())) : null);
   }
 
-  function remindersScreen() {
+  function notesScreen() {
     const add = inlineInput({ id: 'rem-new', placeholder: 'e.g. Drink water first' }, 'Add', (v) => {
       if (!v.trim()) return add.input.focus();
       act(() => C.addReminder(S, v));
@@ -1008,11 +873,15 @@
         i > 0 ? pill('up1', 'Move up', () => { act(() => C.moveReminder(S, r.id, -1)); toast('Moved up', 'up1'); }, 'small') : null,
         i < S.reminders.length - 1 ? pill('down1', 'Move down', () => { act(() => C.moveReminder(S, r.id, 1)); toast('Moved down', 'down1'); }, 'small') : null,
         pill('trash', 'Delete', () => { act(() => C.deleteReminder(S, r.id)); toast('Reminder deleted', 'trash'); }, 'small'))));
+    const kept = S.thoughts.filter((t) => t.status === 'kept');
     return h('section', { class: 'screen' },
-      topbar(back('menu'), 'Reminders'),
-      h('p', { class: 'muted', style: 'margin-bottom:14px' }, 'Short notes in your own words. One shows under the top bar on every screen; tap it for the next. They never move or change by themselves.'),
+      topbar(back('menu'), 'Notes'),
+      h('div', { class: 'section-label', style: 'margin-top:4px' }, 'Reminders'),
+      h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'Short notes in your own words. One shows at the top of every screen except Home; tap it for the next.'),
       add.el,
-      rows.length ? h('div', { class: 'list spaced' }, rows) : h('p', { class: 'muted spaced', style: 'text-align:center' }, 'No reminders yet. Ideas: why this matters to you, drink water first, phone face down.'));
+      rows.length ? h('div', { class: 'list spaced' }, rows) : null,
+      h('div', { class: 'section-label' }, 'Saved thoughts'),
+      kept.length ? h('div', { class: 'list' }, kept.map((t) => thoughtRow(t, false))) : h('p', { class: 'muted' }, 'Thoughts you park and keep appear here.'));
   }
 
   function settingsScreen() {
@@ -1023,62 +892,46 @@
       toast(S.prefs.focus ? 'Focus mode on' : 'Focus mode off', 'eye');
     }) },
     icon('eye'),
-    h('div', { class: 'grow' }, h('div', {}, 'Focus mode'), h('div', { class: 'muted' }, 'Hides notices, today dots and extra buttons. Only the task and Start stay.')),
+    h('div', { class: 'grow' }, h('div', {}, 'Focus mode'), h('div', { class: 'muted' }, 'Hides notices, reminders and the Not this one link. Only the task and Start stay.')),
     h('span', { class: 'switch' }));
-    const gameRow = switchRow('target', 'Game layer', 'Points, levels, streaks, daily quest and spin, milestones and records.', S.prefs.game, () => {
+    const gameRow = switchRow('target', 'Points and streaks', 'Points, levels, a streak and badges, shown after Finish and under Progress.', S.prefs.game, () => {
       act(() => { S.prefs.game = !S.prefs.game; });
       toast(S.prefs.game ? 'Game layer on' : 'Game layer off', 'target');
     });
-    const pipRow = switchRow('message', 'Pip the mascot', 'A short note at the top of Home, once per visit. Never during a task.', S.prefs.mascot, () => {
-      act(() => { S.prefs.mascot = !S.prefs.mascot; });
-      toast(S.prefs.mascot ? 'Pip is on' : 'Pip is off', 'message');
-    });
     return h('section', { class: 'screen' },
-      topbar(back('menu'), 'Display'),
+      topbar(back('menu'), 'Settings'),
       h('label', { class: 'f' }, icon('sun'), 'Theme'),
       seg('theme', [['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']]),
       h('div', { class: 'spaced' }, focusRow),
-      h('div', { class: 'spaced' }, switchRow('pause', 'Turn off animation', 'Stops screen fades, the spin wheel turning and the dice roll. Your phone\'s reduce-motion setting does this too.', S.prefs.motion === 'off', () => {
+      h('div', { class: 'spaced' }, switchRow('pause', 'Turn off animation', 'Stops screen fades and the swipe movement. Your phone\'s reduce-motion setting does this too.', S.prefs.motion === 'off', () => {
         act(() => { S.prefs.motion = S.prefs.motion === 'off' ? 'on' : 'off'; });
         toast(S.prefs.motion === 'off' ? 'Animation off' : 'Animation on', 'pause');
       })),
       h('div', { class: 'spaced' }, gameRow),
-      S.prefs.game ? h('div', { class: 'spaced' }, pipRow) : null);
+      h('div', { class: 'section-label', style: 'margin-top:28px' }, 'Backup'),
+      backupSection());
   }
 
   function progressHub() {
-    if (!game()) return todayScreen();
     const lv = C.levelInfo(C.totalPoints(S));
     const st = C.streaks(S, now());
-    const q = C.dailyQuest(S, now());
-    const rec = C.records(S);
     const pct = lv.next ? Math.round(((lv.points - lv.floor) / (lv.next - lv.floor)) * 100) : 100;
-    const fmtDay = (k) => new Date(k + 'T12:00:00').toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
-    const spun = S.game.spins[C.dayKey(now())];
-    const spinState = C.canSpin(S, now()) ? pill('arrow', '🎡 Spin the wheel', openSpin)
-      : h('p', { class: 'muted' }, spun ? '🎡 Spin used today: +' + spun.points : '🎡 Daily spin unlocks after your first start today');
-    const ms = C.milestoneList(S);
+    const ms = C.milestoneList(S).filter((m) => m.earnedAt);
+    const stats = C.reviewStats(S, now());
     return h('section', { class: 'screen' },
       topbar(back('menu'), 'Progress'),
-      h('div', { class: 'panel' },
-        h('div', { class: 'lvl-head' }, h('b', {}, '⭐ Level ' + lv.level + ' · ' + lv.name), h('span', { class: 'muted' }, lv.points + ' pts')),
+      game() ? h('div', { class: 'panel' },
+        h('div', { class: 'lvl-head' }, h('b', {}, '⭐ Level ' + lv.level + ' · ' + lv.name), h('span', { class: 'muted' }, lv.points + ' points')),
         h('div', { class: 'lvl-bar', role: 'progressbar', 'aria-label': 'Progress to next level', 'aria-valuenow': String(pct), 'aria-valuemin': '0', 'aria-valuemax': '100' }, h('span', { style: 'width:' + pct + '%' })),
-        h('p', { class: 'muted' }, lv.next ? (lv.next - lv.points) + ' points to Level ' + (lv.level + 1) : 'Top level reached')),
-      h('div', { class: 'tiles spaced' },
-        h('div', { class: 'tile' }, h('div', { style: 'font-size:28px' }, '🔥'), h('b', {}, st.current ? st.current + '-day streak' : 'No streak yet'), h('div', { class: 'sub2' }, 'Best: ' + st.best + (st.best === 1 ? ' day' : ' days'))),
-        h('div', { class: 'tile' }, h('div', { style: 'font-size:28px' }, q.claimed ? '✅' : '🎯'), h('b', {}, q.text), h('div', { class: 'sub2' }, q.claimed ? 'Done: +' + q.bonus : 'Daily quest: +' + q.bonus))),
-      h('div', { class: 'spaced', style: 'text-align:center' }, spinState),
-      h('div', { class: 'section-label' }, 'Milestones (' + ms.filter((m) => m.earnedAt).length + ' of ' + ms.length + ')'),
-      h('div', { class: 'tiles three' }, ms.map((m) => h('div', { class: 'tile badge-tile' + (m.earnedAt ? '' : ' dim') },
-        h('div', { style: 'font-size:28px' }, m.earnedAt ? m.icon : '🔒'), h('b', {}, m.name), m.earnedAt ? null : h('div', { class: 'sub2' }, m.hint)))),
-      h('div', { class: 'section-label' }, 'Your records'),
-      rec.topDays.length
-        ? h('div', { class: 'list' }, rec.topDays.map((d, i) => h('div', { class: 'row-item' },
-          h('b', { style: 'width:2ch' }, String(i + 1)), h('div', { class: 'grow' }, fmtDay(d.day)), h('span', {}, d.points + ' pts'))))
-        : h('p', { class: 'muted' }, 'Your best days will appear here.'),
-      rec.bestWeek ? h('p', { class: 'muted' }, 'Best week: from ' + fmtDay(rec.bestWeek.week) + ', ' + rec.bestWeek.points + ' pts') : null,
+        h('p', {}, st.current ? '🔥 ' + st.current + '-day streak (best ' + st.best + ')' : '🔥 Start today for a streak'),
+        ms.length ? h('p', { class: 'muted' }, 'Badges: ' + ms.map((m) => m.icon + ' ' + m.name).join(', ')) : null) : null,
       h('div', { class: 'section-label' }, 'Today'),
-      todayList());
+      todayList(),
+      h('div', { class: 'section-label' }, 'Look back'),
+      h('table', { class: 'stats' },
+        h('thead', {}, h('tr', {}, ['Week', 'Opened', 'Started', 'Got going'].map((x) => h('th', {}, x)))),
+        h('tbody', {}, stats.weeks.map((w) => h('tr', {}, [w.week, w.opens, w.starts, w.began].map((x) => h('td', {}, String(x))))))),
+      h('div', { class: 'actions-row' }, pill('pencil', 'Answer the look-back questions', () => go('review'))));
   }
 
   function todayList() {
@@ -1215,15 +1068,6 @@
       }, 'quiet')) : null);
   }
 
-  function savedThoughtsScreen() {
-    const list = S.thoughts.filter((t) => t.status === 'kept');
-    return h('section', { class: 'screen' },
-      topbar(back('menu'), 'Thoughts'),
-      list.length
-        ? h('div', { class: 'list' }, list.map((t) => thoughtRow(t, false)))
-        : h('div', { class: 'center stack' }, icon('bulb'), h('p', { class: 'muted' }, 'Thoughts you park and keep appear here.')));
-  }
-
   function exportJson() {
     return JSON.stringify(S, null, 2);
   }
@@ -1242,7 +1086,7 @@
     return 'next-step-backup-' + new Date().toISOString().slice(0, 10) + '.json';
   }
 
-  function backupScreen() {
+  function backupSection() {
     const file = h('input', { type: 'file', accept: 'application/json,.json', id: 'imp-file', style: 'display:none' });
     const doImport = (raw) => {
       const r = C.parseState(raw);
@@ -1258,10 +1102,8 @@
       if (f) f.text().then(doImport);
     });
     const canShare = navigator.canShare && navigator.canShare({ files: [new File(['{}'], 'x.json', { type: 'application/json' })] });
-    return h('section', { class: 'screen' },
-      topbar(back('menu'), 'Backup'),
-      h('div', { class: 'note' }, icon('help'), h('div', { class: 'grow' }, 'Everything is stored only on this phone. Save a backup now and then.')),
-      h('div', { class: 'section-label' }, 'Save a copy'),
+    return h('div', {},
+      h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'Everything is stored only on this phone. Save a copy now and then.'),
       h('div', { class: 'tiles' },
         canShare ? tile('share', 'Share backup file', () => {
           const f = new File([exportJson()], backupName(), { type: 'application/json' });
@@ -1271,7 +1113,7 @@
         tile('copy', 'Copy backup text', () => {
           navigator.clipboard.writeText(exportJson()).then(() => toast('Backup copied', 'check'), () => toast('Copy did not work here', 'x'));
         })),
-      h('div', { class: 'section-label' }, 'Restore (replaces current data)'),
+      h('p', { class: 'muted', style: 'margin:16px 0 10px' }, 'Restoring replaces everything currently in the app.'),
       h('div', { class: 'tiles' },
         tile('restore', 'Restore from file', () => file.click()),
         tile('pencil', 'Restore from text', () => sheet('paste', 'Restore from text', (close) => {
@@ -1288,7 +1130,7 @@
     const inputs = qs.map((q, i) => field(q, null, { id: 'rq' + i, multiline: true }));
     const obstacles = Object.entries(st.obstacles);
     return h('section', { class: 'screen' },
-      topbar(back(day ? 'home' : 'menu'), 'Look back'),
+      topbar(back(day ? 'home' : 'progress'), 'Look back'),
       h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'A record, not a score.'),
       h('table', { class: 'stats' },
         h('thead', {}, h('tr', {}, ['Week', 'Opened', 'Link opened', 'Started', 'Got going'].map((x) => h('th', {}, x)))),

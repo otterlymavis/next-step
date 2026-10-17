@@ -240,27 +240,7 @@ test('streaks count consecutive start days and today stays alive', () => {
   assert.equal(C.streaks(s, T0 + 9 * C.DAY).current, 0);
 });
 
-test('daily quest and spin pay out once per day', () => {
-  const s = C.seedState(T0);
-  const a = C.ensureRecommendation(s, T0);
-  assert.equal(C.canSpin(s, T0), false, 'spin unlocks after the first start');
-  const att = C.start(s, a.id, T0);
-  C.finish(s, att.id, 'finished', {}, T0 + MIN);
-  C.parkThought(s, 'x', null, T0);
-  const t2 = C.start(s, C.ensureRecommendation(s, T0).id, T0 + 2 * MIN);
-  C.finish(s, t2.id, 'progress', { position: 'p' }, T0 + 3 * MIN);
-  const q = C.dailyQuest(s, T0);
-  assert.equal(q.complete, true);
-  assert.equal(C.claimQuest(s, T0), q.bonus);
-  assert.equal(C.claimQuest(s, T0), 0);
-  assert.equal(C.canSpin(s, T0), true);
-  const r = C.spin(s, T0, 0.99);
-  assert.equal(r.points, C.SPIN_PRIZES[C.SPIN_PRIZES.length - 1]);
-  assert.equal(C.spin(s, T0, 0), null);
-  assert.equal(C.dailyQuest(s, T0).text, C.dailyQuest(s, T0 + 5 * 60 * MIN).text, 'same quest all day');
-});
-
-test('milestones are awarded once and records rank your own days', () => {
+test('milestones are awarded once', () => {
   let s = C.seedState(T0);
   const a = C.ensureRecommendation(s, T0);
   const att = C.start(s, a.id, T0);
@@ -270,10 +250,4 @@ test('milestones are awarded once and records rank your own days', () => {
   assert.equal(C.checkMilestones(s, T0).length, 0);
   s = roundtrip(s);
   assert.ok(C.milestoneList(s).find((m) => m.id === 'first-start').earnedAt);
-  const t2 = C.start(s, a.id, T0 + C.DAY);
-  C.finish(s, t2.id, 'finished', {}, T0 + C.DAY + MIN);
-  const rec = C.records(s);
-  assert.equal(rec.topDays[0].points, C.POINTS.start + C.POINTS.finished);
-  const map = C.stepMap(s, a.goalId);
-  assert.deepEqual([map.done, map.position, map.total], [1, 2, 2]);
 });

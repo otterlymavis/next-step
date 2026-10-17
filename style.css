@@ -287,43 +287,16 @@ table.stats th { font-weight: 500; color: var(--muted); }
 .reminder .grow { flex: 1; min-width: 0; }
 .reminder .muted { flex: none; }
 
-/* ---------- game layer ---------- */
-.gamebar {
-  width: 100%; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
-  border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 8px 12px; font-size: 16px; text-align: left; min-height: 44px;
-}
-.stepmap { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; font-size: 16px; color: var(--muted); }
-.sm-dots { display: flex; gap: 6px; align-items: center; }
-.sm-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--muted); }
-.sm-dot.done { background: var(--muted); }
-.sm-dot.here { width: 16px; height: 16px; border-color: var(--text); background: var(--text); }
-.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+/* ---------- game layer: Progress panel and the line after Finish ---------- */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
 .lvl-head { display: flex; justify-content: space-between; align-items: baseline; }
-.lvl-bar { height: 10px; border-radius: 5px; background: var(--line); margin: 10px 0 8px; overflow: hidden; }
+.lvl-bar { height: 10px; border-radius: 5px; background: var(--line); margin: 4px 0; overflow: hidden; }
 .lvl-bar span { display: block; height: 100%; background: var(--muted); border-radius: 5px; }
-.badge-tile { min-height: 96px; box-shadow: none; }
-.badge-tile .sub2 { -webkit-line-clamp: unset; display: block; }
-.rewards { margin: 4px 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); text-align: left; display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.reward-head { display: flex; align-items: center; gap: 8px; font-size: 18px; }
-.pip { font-size: 30px; line-height: 1; }
-.mascot {
-  display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px;
-  font-size: 16px; margin-bottom: 12px;
-}
-.mascot .pip { font-size: 30px; }
-.mascot .grow { flex: 1; }
-.wheel-wrap { position: relative; width: 240px; margin: 0 auto; }
-.wheel { width: 240px; height: 240px; display: block; }
-.pointer { position: absolute; top: -6px; left: 50%; transform: translateX(-50%); font-size: 22px; z-index: 1; color: var(--text); }
-.tile.lit { outline: 3px solid var(--text); outline-offset: 2px; }
+.rewards-line { margin: 10px 0 4px; color: var(--muted); text-align: center; }
 
-/* ---------- compact Home so Start stays on screen ---------- */
-.stepmap { flex-direction: row; justify-content: center; gap: 10px; margin-top: 10px; }
-.card { padding: 16px 16px 14px; }
-.card .emoji { width: 52px; height: 52px; border-radius: 16px; font-size: 28px; }
-.card .chips { margin-top: 10px; }
-.go { width: 84px; height: 84px; }
-.go-btn { padding: 4px 16px; }
-.go-label { margin-top: 6px; }
-.gamebar { margin-bottom: 8px; padding: 6px 12px; }
-.mascot { margin-bottom: 8px; padding: 8px 12px; }
+/* ---------- Home: just the task and Start ---------- */
+.task { padding: 8px 4px; touch-action: pan-y; transition: transform .3s ease, opacity .3s ease; }
+.task.dragging { transition: none; }
+.task h1 { font-size: 30px; }
+.task .action { font-size: 20px; margin: 12px 0 6px; }
+.go { width: 88px; height: 88px; }
