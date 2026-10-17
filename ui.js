@@ -75,7 +75,7 @@
   let timer = null;
   const app = document.getElementById('app');
   const now = () => Date.now();
-  const reducedMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reducedMotion = () => (S && S.prefs.motion === 'off') || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const game = () => S && S.prefs.game;
   const buzz = () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) { /* unsupported */ } };
 
@@ -274,6 +274,7 @@
     if (S && S.prefs.theme !== 'auto') root.setAttribute('data-theme', S.prefs.theme);
     else root.removeAttribute('data-theme');
     document.body.classList.toggle('focus-mode', !!(S && S.prefs.focus));
+    document.body.classList.toggle('no-motion', !!(S && S.prefs.motion === 'off'));
   }
 
   // ---------- render ----------
@@ -282,7 +283,7 @@
     clearInterval(timer);
     timer = null;
     // A confirmation belongs to the screen it was shown on; actions show theirs after rendering.
-    document.querySelectorAll('.sheet,.scrim,.toast,.mascot').forEach((x) => x.remove());
+    document.querySelectorAll('.sheet,.scrim,.toast').forEach((x) => x.remove());
     applyPrefs();
     const screen = screenFor();
     const bar = screen.querySelector('.topbar');
@@ -372,19 +373,14 @@
     return 'Quest done for today. Anything more is a bonus.';
   }
 
-  function showPip() {
-    if (!game() || !S.prefs.mascot || S.prefs.focus || mascotShown || document.querySelector('.sheet')) return;
-    if (view.name !== 'home' || C.currentAttempt(S)) return; // never during a task or on another screen
-    mascotShown = true;
-    const close = () => card.remove();
-    const card = h('div', { class: 'mascot', role: 'status' },
+  // An inline card at the top of Home, never a pop-up over content.
+  function pipCard() {
+    if (!game() || !S.prefs.mascot || mascotShown) return null;
+    const card = h('div', { class: 'mascot hide-in-focus', role: 'note' },
       h('div', { class: 'pip', 'aria-hidden': 'true' }, '🦉'),
-      h('div', { class: 'grow' }, h('b', {}, 'Pip'), h('div', {}, pipMessage())),
-      h('button', { class: 'textlink press', onclick: tap(close) }, 'Thanks, Pip'));
-    // Pops up near the top so it never covers Start.
-    const anchor = app.querySelector('.reminder-slot:not(:empty)') || app.querySelector('.topbar');
-    if (anchor) card.style.top = Math.round(anchor.getBoundingClientRect().bottom + 8) + 'px';
-    document.body.append(card);
+      h('div', { class: 'grow' }, h('b', {}, 'Pip: '), pipMessage()),
+      h('button', { class: 'textlink press', onclick: tap(() => { mascotShown = true; card.remove(); }) }, 'Hide Pip'));
+    return card;
   }
 
   // ---------- daily spin ----------
@@ -484,20 +480,23 @@
         dl ? h('span', { class: 'chip' }, icon('flag'), dl) : null),
       stepMapEl(g.id));
     enableSwipe(card, () => go('another'));
-    view.after = () => { delete view.after; setTimeout(showPip, 600); };
+    // One message at a time: Pip only speaks when there is no other notice.
+    const noteList = notices();
+    const pip = noteList.length ? null : pipCard();
+    view.after = () => { delete view.after; if (pip) mascotShown = true; };
 
     return h('section', { class: 'screen' },
       topbar(homeLeft(), null),
-      h('div', { class: 'hide-in-focus' }, notices()),
+      h('div', { class: 'hide-in-focus' }, noteList),
       gameBar(),
       h('div', { class: 'center' },
-        greeting,
+        pip ? pip : greeting,
         card,
         h('div', { class: 'stack', style: 'margin-top:14px' }, bigButton('play', 'Start', startHint, () => onStart(rec), true)),
         h('div', { class: 'actions-row hide-in-focus' },
           pill('smaller', 'Make it smaller', () => go('smaller', { actionId: rec.id })),
           pill('shuffle', 'Pick another', () => go('another'))),
-        h('p', { class: 'hint hide-in-focus' }, 'Or swipe the card sideways to pick another')));
+        ));
   }
 
   // Horizontal swipe on the card; vertical scrolling is left alone. Buttons offer the same action.
@@ -534,7 +533,7 @@
     if (S.exampleNote) {
       out.push(note('pencil', 'These are example goals.',
         tl('Edit goals', () => { S.exampleNote = false; save(); go('goals'); }),
-        tl('Hide', () => act(() => { S.exampleNote = false; }))));
+        tl('Hide note', () => act(() => { S.exampleNote = false; }))));
     }
     for (const g of C.passedDeadlines(S, now())) {
       out.push(note('flag', (g.deadlineLabel || 'Deadline') + ' for ' + g.name + ' was ' + C.formatDate(g.deadline) + '.',
@@ -688,10 +687,7 @@
           delete UI.drafts[draftKey('park')];
           close();
           paintPark();
-          const r = collectRewards();
-          save();
-          if (r.milestones.length || r.quest) announce(r);
-          else toast('Parked. You will see it when you finish', 'bulb');
+          toast('Parked. You will see it when you finish', 'bulb');
         });
         return [h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'It is saved for after, so you can get back to work.'), inp.el];
       });
@@ -1024,7 +1020,7 @@
       act(() => { S.prefs.game = !S.prefs.game; });
       toast(S.prefs.game ? 'Game layer on' : 'Game layer off', 'target');
     });
-    const pipRow = switchRow('message', 'Pip the mascot', 'Pops up on Home once per visit, never during a task.', S.prefs.mascot, () => {
+    const pipRow = switchRow('message', 'Pip the mascot', 'A short note at the top of Home, once per visit. Never during a task.', S.prefs.mascot, () => {
       act(() => { S.prefs.mascot = !S.prefs.mascot; });
       toast(S.prefs.mascot ? 'Pip is on' : 'Pip is off', 'message');
     });
@@ -1033,6 +1029,10 @@
       h('label', { class: 'f' }, icon('sun'), 'Theme'),
       seg('theme', [['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']]),
       h('div', { class: 'spaced' }, focusRow),
+      h('div', { class: 'spaced' }, switchRow('pause', 'Turn off animation', 'Stops screen fades, the spin wheel turning and the dice roll. Your phone\'s reduce-motion setting does this too.', S.prefs.motion === 'off', () => {
+        act(() => { S.prefs.motion = S.prefs.motion === 'off' ? 'on' : 'off'; });
+        toast(S.prefs.motion === 'off' ? 'Animation off' : 'Animation on', 'pause');
+      })),
       h('div', { class: 'spaced' }, gameRow),
       S.prefs.game ? h('div', { class: 'spaced' }, pipRow) : null);
   }
@@ -1181,10 +1181,10 @@
     };
 
     // Keep "More options" open if anything inside it has an unsaved draft.
-    const moreIds = ['g-cp', 'g-small', 'g-target', 'g-later', 'g-dl', 'g-dll', 'g-status', 'g-checkin'];
+    const moreIds = ['g-small', 'g-target', 'g-dl', 'g-dll', 'g-status', 'g-checkin'];
     const more = h('details', { open: moreIds.some((id) => draft(id) != null) },
-      h('summary', {}, icon('sliders'), 'More options: restart point, steps, deadline'),
-      cp.el, small.el, target.el, later.el, dl.el, dlLabel.el,
+      h('summary', {}, icon('sliders'), 'More options: small version, deadline, status'),
+      small.el, target.el, dl.el, dlLabel.el,
       h('label', { class: 'f', for: 'g-status' }, icon('pause'), 'Status'), status,
       h('label', { class: 'f', for: 'g-checkin' }, icon('clock'), 'Quiet check-in (a line on screen, never a notification)'), checkin);
 
@@ -1194,7 +1194,10 @@
       h('label', { class: 'f' }, 'Icon and colour'),
       h('div', { class: 'picker' }, iconButtons),
       h('div', { class: 'swatches', style: 'margin-top:12px;justify-content:center' }, hueButtons),
-      name.el, text.el, res.el, more,
+      name.el, text.el, res.el,
+      // Restart point and later steps stay visible so editing the action never leaves them stale.
+      cp.el, h('p', { class: 'muted', style: 'margin-top:6px' }, 'Clear this if you changed the action.'),
+      later.el, more,
       h('div', { class: 'spaced' }, primary(isNew ? 'Add goal' : 'Save changes', onSave, 'check')),
       g ? h('div', { class: 'actions-row' }, pill('trash', 'Delete this goal', () => {
         if (!confirm('Delete “' + g.name + '” and all its steps? This cannot be undone.')) return;
@@ -1335,7 +1338,9 @@
     if (welcome === 'first') welcome = 'normal';
     C.nextReminder(S);
     // Reopen an unfinished process exactly where it was left.
-    if (UI.view && RESUMABLE.has(UI.view.name)) {
+    const ALWAYS = new Set(['resource', 'finish', 'thoughts']); // mid-process screens
+    const hasDraft = UI.view && Object.keys(UI.drafts).some((k) => k.startsWith(vkey(UI.view) + '#'));
+    if (UI.view && RESUMABLE.has(UI.view.name) && (ALWAYS.has(UI.view.name) || hasDraft || UI.sheet)) {
       view = UI.view;
       longAbsenceHandled = true;
     }

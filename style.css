@@ -77,6 +77,7 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+.no-motion *, .no-motion *::before, .no-motion *::after { animation: none !important; transition: none !important; }
 
 /* ---------- layout ---------- */
 .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; min-height: 48px; margin-bottom: 8px; gap: 8px; }
@@ -306,14 +307,23 @@ table.stats th { font-weight: 500; color: var(--muted); }
 .reward-head { display: flex; align-items: center; gap: 8px; font-size: 18px; }
 .pip { font-size: 30px; line-height: 1; }
 .mascot {
-  position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 64px); max-width: 456px; margin: 0 auto; z-index: 15;
-  display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 12px 14px;
-  box-shadow: 0 8px 30px rgba(0,0,0,.15); font-size: 16px; animation: pop-in .4s ease-out;
+  display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px;
+  font-size: 16px; margin-bottom: 12px;
 }
-.mascot .pip { font-size: 40px; }
+.mascot .pip { font-size: 30px; }
 .mascot .grow { flex: 1; }
-@keyframes pop-in { from { opacity: 0; transform: translateY(-12px); } }
 .wheel-wrap { position: relative; width: 240px; margin: 0 auto; }
 .wheel { width: 240px; height: 240px; display: block; }
 .pointer { position: absolute; top: -6px; left: 50%; transform: translateX(-50%); font-size: 22px; z-index: 1; color: var(--text); }
 .tile.lit { outline: 3px solid var(--text); outline-offset: 2px; }
+
+/* ---------- compact Home so Start stays on screen ---------- */
+.stepmap { flex-direction: row; justify-content: center; gap: 10px; margin-top: 10px; }
+.card { padding: 16px 16px 14px; }
+.card .emoji { width: 52px; height: 52px; border-radius: 16px; font-size: 28px; }
+.card .chips { margin-top: 10px; }
+.go { width: 84px; height: 84px; }
+.go-btn { padding: 4px 16px; }
+.go-label { margin-top: 6px; }
+.gamebar { margin-bottom: 8px; padding: 6px 12px; }
+.mascot { margin-bottom: 8px; padding: 8px 12px; }
