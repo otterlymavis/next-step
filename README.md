@@ -9,6 +9,7 @@ Phase 1–2 prototype of the execution assistant described in `../PLAN.md`: a ph
 | `core.js` | State, selection rules, attempts, return flow, reminders, points, streaks, badges, and display preferences. No DOM, so it can be tested in Node. |
 | `ui.js` | Screens. Every change is saved to `localStorage` immediately. Unsent form drafts and the open screen of an unfinished process are kept under a separate key, so the process resumes after the app closes. |
 | `sw.js` | Cache-first offline shell: the app opens instantly. A new version installs in the background and Home offers "Update now". Bump `VERSION` here and `APP_VERSION` in `ui.js` together whenever a file changes. |
+| `fonts/` | Lexend, Atkinson Hyperlegible and OpenDyslexic (regular and bold, Latin), each with its SIL Open Font License. Loaded only when chosen in Settings. |
 | `test/core.test.js` | Phase 2 acceptance gates. |
 
 ## Run
@@ -24,6 +25,7 @@ cd app && python3 -m http.server 8765   # then open http://localhost:8765
 - All text is 16px or larger with 1.5 line spacing, with no all-caps or italics.
 - Every button has a text label, and every action confirms on screen.
 - Multi-step flows show "Step x of n". Drafts survive leaving the app; Back discards them.
+- Optional reading fonts (Lexend, Atkinson Hyperlegible, OpenDyslexic) and wider spacing.
 - Visible keyboard focus. Theme, focus mode, animation and points switches, and backup, under More → Settings.
 
 ## Put it on your phone

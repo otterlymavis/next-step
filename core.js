@@ -30,7 +30,7 @@
       thoughts: [],
       events: [],        // { type: 'open' | 'launch', at, actionId? }
       reviewsSeen: [],   // [7, 14]
-      prefs: { theme: 'auto', focus: false, game: true, mascot: true, motion: 'on' }, // theme: auto | light | dark
+      prefs: { theme: 'auto', focus: false, game: true, mascot: true, motion: 'on', font: 'system', spacing: false }, // theme: auto | light | dark
       game: { milestones: {}, quests: {}, spins: {} }, // earned once; keyed by id or day
       reminders: [],     // { id, text } in display order
       reminderIndex: 0,  // which reminder is showing
@@ -92,7 +92,7 @@
     out.thoughts = s.thoughts || [];
     out.events = s.events || [];
     out.reviewsSeen = s.reviewsSeen || [];
-    out.prefs = Object.assign({ theme: 'auto', focus: false, game: true, mascot: true, motion: 'on' }, s.prefs || {});
+    out.prefs = Object.assign({ theme: 'auto', focus: false, game: true, mascot: true, motion: 'on', font: 'system', spacing: false }, s.prefs || {});
     out.game = Object.assign({ milestones: {}, quests: {}, spins: {} }, s.game || {});
     out.reminders = s.reminders || [];
     out.reminderIndex = s.reminderIndex || 0;

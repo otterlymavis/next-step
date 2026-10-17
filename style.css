@@ -300,3 +300,22 @@ table.stats th { font-weight: 500; color: var(--muted); }
 .task h1 { font-size: 30px; }
 .task .action { font-size: 20px; margin: 12px 0 6px; }
 .go { width: 88px; height: 88px; }
+
+/* ---------- reading fonts (bundled, SIL Open Font License; downloaded only when used) ---------- */
+@font-face { font-family: "Lexend"; src: url("fonts/lexend-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Lexend"; src: url("fonts/lexend-700.woff2") format("woff2"); font-weight: 600 800; font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; src: url("fonts/atkinson-hyperlegible-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; src: url("fonts/atkinson-hyperlegible-700.woff2") format("woff2"); font-weight: 600 800; font-display: swap; }
+@font-face { font-family: "OpenDyslexic"; src: url("fonts/opendyslexic-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "OpenDyslexic"; src: url("fonts/opendyslexic-700.woff2") format("woff2"); font-weight: 600 800; font-display: swap; }
+
+:root[data-font="lexend"] body, [data-font-preview="lexend"] { font-family: "Lexend", system-ui, sans-serif; }
+:root[data-font="atkinson"] body, [data-font-preview="atkinson"] { font-family: "Atkinson Hyperlegible", system-ui, sans-serif; }
+:root[data-font="opendyslexic"] body, [data-font-preview="opendyslexic"] { font-family: "OpenDyslexic", system-ui, sans-serif; }
+[data-font-preview="system"] { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+/* Form controls don't inherit the page font by default. */
+:root[data-font] input, :root[data-font] textarea, :root[data-font] select, :root[data-font] button { font-family: inherit; }
+.font-option[aria-checked="true"] { border-color: var(--text); }
+
+.wide-spacing { letter-spacing: .04em; word-spacing: .14em; }
+.wide-spacing p, .wide-spacing .muted, .wide-spacing .s, .wide-spacing .sub2 { line-height: 1.75; }

@@ -6,7 +6,7 @@
   const UI_KEY = 'nextstep.ui'; // open screen and unsent drafts, so a process survives the app closing
   const PREV_KEY = 'nextstep.state.prev';
   const UNREADABLE_PREFIX = 'nextstep.unreadable.';
-  const APP_VERSION = 10; // keep in step with VERSION in sw.js
+  const APP_VERSION = 11; // keep in step with VERSION in sw.js
   const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review', 'notes']);
 
   // Line icons (24×24, stroke).
@@ -271,6 +271,9 @@
     else root.removeAttribute('data-theme');
     document.body.classList.toggle('focus-mode', !!(S && S.prefs.focus));
     document.body.classList.toggle('no-motion', !!(S && S.prefs.motion === 'off'));
+    if (S && S.prefs.font && S.prefs.font !== 'system') root.setAttribute('data-font', S.prefs.font);
+    else root.removeAttribute('data-font');
+    document.body.classList.toggle('wide-spacing', !!(S && S.prefs.spacing));
   }
 
   // ---------- render ----------
@@ -884,6 +887,24 @@
       kept.length ? h('div', { class: 'list' }, kept.map((t) => thoughtRow(t, false))) : h('p', { class: 'muted' }, 'Thoughts you park and keep appear here.'));
   }
 
+  // Each option is shown in its own font. Fonts are bundled with the app and only download when used.
+  const FONTS = [
+    ['system', 'Phone default', 'The font your phone already uses.'],
+    ['lexend', 'Lexend', 'Designed to make reading feel smoother. Often suggested for ADHD.'],
+    ['atkinson', 'Atkinson Hyperlegible', 'Letters that are hard to mix up, like I, l and 1.'],
+    ['opendyslexic', 'OpenDyslexic', 'Heavier letter bottoms, made for dyslexia. Some people find it calmer.'],
+  ];
+
+  function fontPicker() {
+    return h('div', { class: 'list', role: 'radiogroup', 'aria-label': 'Font' }, FONTS.map(([key, name, desc]) =>
+      h('button', {
+        class: 'row-item press font-option', role: 'radio', 'aria-checked': String((S.prefs.font || 'system') === key), 'data-font-preview': key,
+        onclick: tap(() => { act(() => { S.prefs.font = key; }); toast('Font: ' + name, 'check'); }),
+      },
+      h('div', { class: 'grow' }, h('div', { class: 't' }, name), h('div', { class: 'muted' }, desc)),
+      (S.prefs.font || 'system') === key ? icon('check') : null)));
+  }
+
   function settingsScreen() {
     const seg = (key, options) => h('div', { class: 'seg', role: 'group' }, options.map(([val, label]) =>
       h('button', { 'aria-pressed': String(S.prefs[key] === val), onclick: tap(() => { act(() => { S.prefs[key] = val; }); toast('Theme: ' + label, 'check'); }) }, label)));
@@ -902,6 +923,12 @@
       topbar(back('menu'), 'Settings'),
       h('label', { class: 'f' }, icon('sun'), 'Theme'),
       seg('theme', [['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']]),
+      h('label', { class: 'f', style: 'margin-top:22px' }, icon('pencil'), 'Font'),
+      fontPicker(),
+      h('div', { class: 'spaced' }, switchRow('sliders', 'Wider spacing', 'More space between letters, words and lines.', S.prefs.spacing, () => {
+        act(() => { S.prefs.spacing = !S.prefs.spacing; });
+        toast(S.prefs.spacing ? 'Wider spacing on' : 'Wider spacing off', 'check');
+      })),
       h('div', { class: 'spaced' }, focusRow),
       h('div', { class: 'spaced' }, switchRow('pause', 'Turn off animation', 'Stops screen fades and the swipe movement. Your phone\'s reduce-motion setting does this too.', S.prefs.motion === 'off', () => {
         act(() => { S.prefs.motion = S.prefs.motion === 'off' ? 'on' : 'off'; });
