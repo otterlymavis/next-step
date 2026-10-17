@@ -1,0 +1,541 @@
+// Execution Assistant — pure state and rules. No DOM access here, so it can be tested in Node.
+(function (root) {
+  'use strict';
+
+  const SCHEMA = 1;
+  const DAY = 24 * 60 * 60 * 1000;
+  const DEADLINE_WINDOW_DAYS = 14; // adjustable prototype rule (PLAN §4)
+  const WELCOME_BACK_DAYS = 2;
+  const LONG_ABSENCE_DAYS = 21;
+  const MAX_ALTERNATIVES = 3;
+
+  let idCounter = 0;
+  function uid(prefix) {
+    idCounter += 1;
+    return prefix + '_' + Date.now().toString(36) + '_' + idCounter.toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+
+  function emptyState(now) {
+    return {
+      schema: SCHEMA,
+      createdAt: now,
+      lastOpenAt: null,
+      goals: [],
+      actions: [],
+      checkpoints: {},   // actionId -> { position, updatedAt }
+      attempts: [],
+      recommendation: { actionId: null, reason: '', exclusions: [] },
+      thoughts: [],
+      events: [],        // { type: 'open' | 'launch', at, actionId? }
+      reviewsSeen: [],   // [7, 14]
+    };
+  }
+
+  // Example goals from PLAN.md, used as editable placeholders.
+  function seedState(now) {
+    const s = emptyState(now);
+    const ac = addGoal(s, { name: 'Automatic Control' }, now);
+    addAction(s, ac.id, {
+      text: 'Resume lecture 4 and watch the next five minutes',
+      small: 'Watch five minutes',
+      target: 'Continue for around 20 minutes',
+    });
+    setCheckpoint(s, s.actions[s.actions.length - 1].id, 'Lecture 4 · Resume at 12:40', now);
+    addAction(s, ac.id, { text: 'Start lecture 5 and watch the first five minutes', small: 'Watch five minutes' });
+
+    const c = addGoal(s, { name: 'C — Pointers' }, now + 1);
+    addAction(s, c.id, {
+      text: 'Open exercise 3 and read the first question',
+      small: 'Read the first question',
+      target: 'Work on it for around 25 minutes',
+    });
+    setCheckpoint(s, s.actions[s.actions.length - 1].id, 'Exercise 3 · the saved question', now);
+
+    const g = addGoal(s, { name: 'Guitar' }, now + 2);
+    addAction(s, g.id, {
+      text: 'Pick up the guitar and play through the song you are learning',
+      small: 'Play for five minutes',
+      resource: 'Guitar is next to the desk',
+    });
+    return s;
+  }
+
+  // ---------- persistence helpers ----------
+
+  // Returns { state } or { error, raw }. Never replaces unreadable data with an empty plan.
+  function parseState(raw) {
+    if (raw == null || raw === '') return { state: null };
+    try {
+      const s = JSON.parse(raw);
+      if (!s || typeof s !== 'object' || !Array.isArray(s.goals) || !Array.isArray(s.actions)) {
+        return { error: 'Saved data has an unexpected shape.', raw };
+      }
+      if (s.schema > SCHEMA) return { error: 'Saved data comes from a newer version of the app.', raw };
+      return { state: normalize(s) };
+    } catch (e) {
+      return { error: 'Saved data could not be read.', raw };
+    }
+  }
+
+  function normalize(s) {
+    const base = emptyState(s.createdAt || Date.now());
+    const out = Object.assign(base, s);
+    out.recommendation = Object.assign({ actionId: null, reason: '', exclusions: [] }, s.recommendation || {});
+    out.checkpoints = s.checkpoints || {};
+    out.attempts = s.attempts || [];
+    out.thoughts = s.thoughts || [];
+    out.events = s.events || [];
+    out.reviewsSeen = s.reviewsSeen || [];
+    return out;
+  }
+
+  // ---------- lookups ----------
+
+  const goalById = (s, id) => s.goals.find((g) => g.id === id) || null;
+  const actionById = (s, id) => s.actions.find((a) => a.id === id) || null;
+
+  function goalActions(s, goalId) {
+    return s.actions.filter((a) => a.goalId === goalId).sort((a, b) => a.order - b.order);
+  }
+
+  // The next unfinished step of a goal, or null if there is no known next step.
+  function currentAction(s, goalId) {
+    return goalActions(s, goalId).find((a) => !a.done) || null;
+  }
+
+  function currentAttempt(s) {
+    return s.attempts.find((a) => a.state === 'current') || null;
+  }
+
+  function suspendedAttemptFor(s, actionId) {
+    return s.attempts.find((a) => a.state === 'suspended' && a.actionId === actionId) || null;
+  }
+
+  function lastAttention(s, goalId) {
+    let t = 0;
+    for (const a of s.attempts) if (a.goalId === goalId && a.startedAt > t) t = a.startedAt;
+    return t;
+  }
+
+  function daysUntil(dateStr, now) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr + 'T00:00:00');
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    return Math.round((d - today) / DAY);
+  }
+
+  // ---------- goals and actions ----------
+
+  function addGoal(s, fields, now) {
+    const g = {
+      id: uid('g'),
+      name: (fields.name || '').trim() || 'Untitled goal',
+      status: fields.status || 'active', // active | paused | later
+      deadline: fields.deadline || null, // 'YYYY-MM-DD', user-entered only
+      deadlineLabel: fields.deadlineLabel || '',
+      checkinMinutes: fields.checkinMinutes || null, // gentle check-in, off by default
+      needsNext: false, // "Decide next time" was chosen
+      createdAt: now,
+    };
+    s.goals.push(g);
+    return g;
+  }
+
+  function addAction(s, goalId, fields) {
+    const existing = goalActions(s, goalId);
+    const a = {
+      id: uid('a'),
+      goalId,
+      text: (fields.text || '').trim(),
+      resource: (fields.resource || '').trim(),
+      small: (fields.small || '').trim() || 'Start with five minutes',
+      target: (fields.target || '').trim(),
+      order: existing.length ? existing[existing.length - 1].order + 1 : 1,
+      done: false,
+      doneAt: null,
+    };
+    s.actions.push(a);
+    const g = goalById(s, goalId);
+    if (g) g.needsNext = false;
+    return a;
+  }
+
+  function setCheckpoint(s, actionId, position, now) {
+    position = (position || '').trim();
+    if (position) s.checkpoints[actionId] = { position, updatedAt: now };
+    else delete s.checkpoints[actionId];
+  }
+
+  function checkpointFor(s, actionId) {
+    return s.checkpoints[actionId] ? s.checkpoints[actionId].position : '';
+  }
+
+  function setGoalStatus(s, goalId, status) {
+    const g = goalById(s, goalId);
+    if (!g) return;
+    g.status = status;
+    if (status !== 'active') {
+      const cur = currentAttempt(s);
+      if (cur && cur.goalId === goalId) cur.state = 'suspended';
+      const rec = s.recommendation.actionId && actionById(s, s.recommendation.actionId);
+      if (rec && rec.goalId === goalId) s.recommendation.actionId = null;
+    }
+  }
+
+  function deleteGoal(s, goalId) {
+    const ids = new Set(goalActions(s, goalId).map((a) => a.id));
+    s.goals = s.goals.filter((g) => g.id !== goalId);
+    s.actions = s.actions.filter((a) => !ids.has(a.id));
+    ids.forEach((id) => delete s.checkpoints[id]);
+    s.attempts.forEach((a) => {
+      if (ids.has(a.actionId) && a.state !== 'finished') a.state = 'finished';
+    });
+    s.recommendation.exclusions = s.recommendation.exclusions.filter((id) => !ids.has(id));
+    if (ids.has(s.recommendation.actionId)) s.recommendation.actionId = null;
+  }
+
+  // ---------- recommendation (PLAN §4) ----------
+
+  function eligibleActions(s) {
+    const out = [];
+    for (const g of s.goals) {
+      if (g.status !== 'active') continue;
+      const a = currentAction(s, g.id);
+      if (a) out.push(a);
+    }
+    return out;
+  }
+
+  // Goals that are active but have no known next step.
+  function goalsNeedingNext(s) {
+    return s.goals.filter((g) => g.status === 'active' && !currentAction(s, g.id));
+  }
+
+  function isValidRec(s, actionId) {
+    const a = actionId && actionById(s, actionId);
+    if (!a || a.done) return false;
+    const g = goalById(s, a.goalId);
+    return !!g && g.status === 'active' && currentAction(s, g.id) === a;
+  }
+
+  function deadlineReason(g, now) {
+    if (!g.deadline) return '';
+    const n = daysUntil(g.deadline, now);
+    const label = g.deadlineLabel || 'Deadline';
+    if (n < 0) return '';
+    return label + ' on ' + formatDate(g.deadline);
+  }
+
+  // Stable ordering: real approaching deadline first, then least recent attention, then creation order.
+  function rankCandidates(s, candidates, now) {
+    return candidates
+      .map((a) => {
+        const g = goalById(s, a.goalId);
+        const n = daysUntil(g.deadline, now);
+        const soon = n != null && n >= 0 && n <= DEADLINE_WINDOW_DAYS;
+        return { a, g, soon, n, last: lastAttention(s, g.id) };
+      })
+      .sort((x, y) => {
+        if (x.soon !== y.soon) return x.soon ? -1 : 1;
+        if (x.soon && y.soon && x.n !== y.n) return x.n - y.n;
+        if (x.last !== y.last) return x.last - y.last;
+        if (x.g.createdAt !== y.g.createdAt) return x.g.createdAt - y.g.createdAt;
+        return x.a.order - y.a.order;
+      });
+  }
+
+  function reasonFor(s, a, now) {
+    const g = goalById(s, a.goalId);
+    const dl = deadlineReason(g, now);
+    if (suspendedAttemptFor(s, a.id) || checkpointFor(s, a.id)) return dl ? 'Continue where you stopped · ' + dl : 'Continue where you stopped';
+    return dl;
+  }
+
+  // Ensures s.recommendation points at a sensible action. Mutates s; returns the action or null.
+  function ensureRecommendation(s, now) {
+    const cur = currentAttempt(s);
+    if (cur && isValidRec(s, cur.actionId)) {
+      s.recommendation.actionId = cur.actionId;
+      return actionById(s, cur.actionId);
+    }
+    const rec = s.recommendation;
+    if (isValidRec(s, rec.actionId) && !rec.exclusions.includes(rec.actionId)) {
+      rec.reason = reasonFor(s, actionById(s, rec.actionId), now);
+      return actionById(s, rec.actionId);
+    }
+    const pool = eligibleActions(s).filter((a) => !rec.exclusions.includes(a.id));
+    const ranked = rankCandidates(s, pool, now);
+    if (!ranked.length) {
+      rec.actionId = null;
+      rec.reason = '';
+      return null;
+    }
+    rec.actionId = ranked[0].a.id;
+    rec.reason = reasonFor(s, ranked[0].a, now);
+    return ranked[0].a;
+  }
+
+  // Up to three alternatives to the current recommendation. Excluded actions are left out.
+  function alternatives(s, now) {
+    const rec = s.recommendation;
+    const pool = eligibleActions(s).filter((a) => a.id !== rec.actionId && !rec.exclusions.includes(a.id));
+    return rankCandidates(s, pool, now).slice(0, MAX_ALTERNATIVES).map((x) => x.a);
+  }
+
+  // Choose an alternative: the rejected suggestion is excluded until a fresh round. Never advances progress.
+  function chooseAlternative(s, actionId, now) {
+    const rec = s.recommendation;
+    if (rec.actionId && rec.actionId !== actionId && !rec.exclusions.includes(rec.actionId)) {
+      rec.exclusions.push(rec.actionId);
+    }
+    suspendCurrent(s, actionId);
+    rec.actionId = actionId;
+    rec.reason = reasonFor(s, actionById(s, actionId), now);
+  }
+
+  // Skip the current suggestion without choosing a replacement.
+  function skipRecommendation(s, now) {
+    const rec = s.recommendation;
+    if (rec.actionId && !rec.exclusions.includes(rec.actionId)) rec.exclusions.push(rec.actionId);
+    suspendCurrent(s, null);
+    rec.actionId = null;
+    return ensureRecommendation(s, now);
+  }
+
+  function allSkipped(s) {
+    const pool = eligibleActions(s);
+    return pool.length > 0 && pool.every((a) => s.recommendation.exclusions.includes(a.id));
+  }
+
+  function freshRound(s, now) {
+    s.recommendation.exclusions = [];
+    s.recommendation.actionId = null;
+    return ensureRecommendation(s, now);
+  }
+
+  // ---------- attempts (PLAN §3 core loop) ----------
+
+  function suspendCurrent(s, exceptActionId) {
+    const cur = currentAttempt(s);
+    if (cur && cur.actionId !== exceptActionId) cur.state = 'suspended';
+  }
+
+  // START: creates (or resumes) an attempt. Does not mark anything complete.
+  function start(s, actionId, now) {
+    const existing = currentAttempt(s);
+    if (existing && existing.actionId === actionId) return existing;
+    suspendCurrent(s, actionId);
+    const a = actionById(s, actionId);
+    const susp = suspendedAttemptFor(s, actionId);
+    if (susp) {
+      susp.state = 'current';
+      susp.resumedAt = now;
+      s.recommendation.actionId = actionId;
+      return susp;
+    }
+    const att = {
+      id: uid('t'),
+      actionId,
+      goalId: a.goalId,
+      state: 'current',
+      startedAt: now,
+      endedAt: null,
+      outcome: null,
+      obstacle: null,
+      resourceOpened: false,
+      checkinShown: false,
+    };
+    s.attempts.push(att);
+    s.recommendation.actionId = actionId;
+    return att;
+  }
+
+  function recordLaunch(s, attemptId, now) {
+    const att = s.attempts.find((a) => a.id === attemptId);
+    if (att) att.resourceOpened = true;
+    s.events.push({ type: 'launch', at: now, actionId: att ? att.actionId : null });
+  }
+
+  // Finish an attempt. Idempotent: a second call on the same attempt changes nothing.
+  // outcome: 'finished' | 'progress' | 'stuck'
+  // opts: { position, obstacle, nextText }
+  function finish(s, attemptId, outcome, opts, now) {
+    opts = opts || {};
+    const att = s.attempts.find((a) => a.id === attemptId);
+    if (!att || att.state === 'finished') return { changed: false };
+    const action = actionById(s, att.actionId);
+    att.state = 'finished';
+    att.endedAt = now;
+    att.outcome = outcome;
+    if (outcome === 'stuck' && opts.obstacle) att.obstacle = opts.obstacle;
+    let next = null;
+    if (outcome === 'finished' && action) {
+      action.done = true;
+      action.doneAt = now;
+      delete s.checkpoints[action.id];
+      next = currentAction(s, action.goalId);
+      if (!next && opts.nextText) next = addAction(s, action.goalId, { text: opts.nextText });
+      s.recommendation.actionId = next ? next.id : null;
+    } else if (outcome === 'progress' && action) {
+      if (opts.position != null) setCheckpoint(s, action.id, opts.position, now);
+      next = action;
+    } else {
+      next = action;
+    }
+    return { changed: true, next };
+  }
+
+  // After "Step finished" with no known next step.
+  function setNextStep(s, goalId, text) {
+    const g = goalById(s, goalId);
+    if (!g) return null;
+    if (!text || !text.trim()) {
+      g.needsNext = true;
+      return null;
+    }
+    return addAction(s, goalId, { text });
+  }
+
+  // Make it smaller: replace the small version of an action (same step, same checkpoint).
+  function makeSmaller(s, actionId, small) {
+    const a = actionById(s, actionId);
+    if (a && small && small.trim()) a.small = small.trim();
+  }
+
+  // Ending the session clears temporary exclusions (PLAN §4).
+  function endSession(s) {
+    s.recommendation.exclusions = [];
+  }
+
+  // ---------- parked thoughts ----------
+
+  function parkThought(s, text, attemptId, now) {
+    text = (text || '').trim();
+    if (!text) return null;
+    const t = { id: uid('p'), text, at: now, attemptId: attemptId || null, status: 'new' };
+    s.thoughts.push(t);
+    return t;
+  }
+
+  function thoughtsFor(s, attemptId) {
+    return s.thoughts.filter((t) => t.attemptId === attemptId && t.status === 'new');
+  }
+
+  function keepThought(s, id) {
+    const t = s.thoughts.find((x) => x.id === id);
+    if (t) t.status = 'kept';
+  }
+
+  function deleteThought(s, id) {
+    s.thoughts = s.thoughts.filter((x) => x.id !== id);
+  }
+
+  function thoughtToGoal(s, id, now) {
+    const t = s.thoughts.find((x) => x.id === id);
+    if (!t) return null;
+    const g = addGoal(s, { name: t.text, status: 'later' }, now);
+    deleteThought(s, id);
+    return g;
+  }
+
+  // ---------- return flow and evidence ----------
+
+  // Records an app open and reports what kind of welcome to show.
+  function recordOpen(s, now) {
+    const prev = s.lastOpenAt;
+    s.lastOpenAt = now;
+    s.events.push({ type: 'open', at: now });
+    if (s.events.length > 5000) s.events = s.events.slice(-5000);
+    if (!prev) return 'first';
+    const gap = (now - prev) / DAY;
+    if (gap >= LONG_ABSENCE_DAYS) return 'long';
+    if (gap >= WELCOME_BACK_DAYS) return 'back';
+    return 'normal';
+  }
+
+  function passedDeadlines(s, now) {
+    return s.goals.filter((g) => g.status === 'active' && g.deadline && daysUntil(g.deadline, now) < 0);
+  }
+
+  function isSameDay(a, b) {
+    const x = new Date(a), y = new Date(b);
+    return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+  }
+
+  function today(s, now) {
+    const atts = s.attempts.filter((a) => isSameDay(a.startedAt, now));
+    return {
+      starts: atts.length,
+      finishedSteps: atts.filter((a) => a.outcome === 'finished').length,
+      items: atts.map((a) => {
+        const act = actionById(s, a.actionId);
+        const g = goalById(s, a.goalId);
+        return { goal: g ? g.name : '—', text: act ? act.text : '', outcome: a.outcome, state: a.state, at: a.startedAt };
+      }),
+    };
+  }
+
+  // Day-7 / day-14 review offer.
+  function dueReview(s, now) {
+    const days = (now - s.createdAt) / DAY;
+    for (const d of [14, 7]) if (days >= d && !s.reviewsSeen.includes(d)) return d;
+    return null;
+  }
+
+  function reviewStats(s, now) {
+    const start = s.createdAt;
+    const weeks = [];
+    const nWeeks = Math.max(1, Math.ceil((now - start) / (7 * DAY)));
+    for (let w = 0; w < nWeeks; w++) {
+      const lo = start + w * 7 * DAY, hi = lo + 7 * DAY;
+      const inW = (t) => t >= lo && t < hi;
+      const atts = s.attempts.filter((a) => inW(a.startedAt));
+      weeks.push({
+        week: w + 1,
+        opens: s.events.filter((e) => e.type === 'open' && inW(e.at)).length,
+        launches: s.events.filter((e) => e.type === 'launch' && inW(e.at)).length,
+        starts: atts.length,
+        began: atts.filter((a) => a.outcome === 'finished' || a.outcome === 'progress').length,
+        stuck: atts.filter((a) => a.outcome === 'stuck').length,
+      });
+    }
+    const obstacles = {};
+    for (const a of s.attempts) if (a.obstacle) obstacles[a.obstacle] = (obstacles[a.obstacle] || 0) + 1;
+    return { weeks, obstacles };
+  }
+
+  // ---------- formatting ----------
+
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function formatDate(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    return d.getDate() + ' ' + MONTHS[d.getMonth()];
+  }
+
+  function formatElapsed(ms) {
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return m + ' min ago';
+    const h = Math.floor(m / 60);
+    return h + ' h ' + (m % 60) + ' min ago';
+  }
+
+  function isUrl(str) {
+    return /^(https?:\/\/|mailto:|tel:)/i.test((str || '').trim());
+  }
+
+  const api = {
+    SCHEMA, DAY, emptyState, seedState, parseState, normalize,
+    goalById, actionById, goalActions, currentAction, currentAttempt, suspendedAttemptFor,
+    addGoal, addAction, setCheckpoint, checkpointFor, setGoalStatus, deleteGoal,
+    eligibleActions, goalsNeedingNext, ensureRecommendation, alternatives, chooseAlternative,
+    skipRecommendation, allSkipped, freshRound,
+    start, recordLaunch, finish, setNextStep, makeSmaller, endSession,
+    parkThought, thoughtsFor, keepThought, deleteThought, thoughtToGoal,
+    recordOpen, passedDeadlines, today, dueReview, reviewStats,
+    formatDate, formatElapsed, isUrl, daysUntil,
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.Core = api;
+})(typeof self !== 'undefined' ? self : this);
