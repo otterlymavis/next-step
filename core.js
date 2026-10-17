@@ -30,6 +30,7 @@
       thoughts: [],
       events: [],        // { type: 'open' | 'launch', at, actionId? }
       reviewsSeen: [],   // [7, 14]
+      prefs: { theme: 'auto', focus: false }, // theme: auto | light | dark
     };
   }
 
@@ -88,6 +89,7 @@
     out.thoughts = s.thoughts || [];
     out.events = s.events || [];
     out.reviewsSeen = s.reviewsSeen || [];
+    out.prefs = Object.assign({ theme: 'auto', focus: false }, s.prefs || {});
     out.goals.forEach((g, i) => {
       if (!g.icon) g.icon = GOAL_ICONS[i % GOAL_ICONS.length];
       if (g.hue == null) g.hue = GOAL_HUES[i % GOAL_HUES.length];

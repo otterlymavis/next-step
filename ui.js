@@ -3,8 +3,10 @@
   'use strict';
   const C = window.Core;
   const KEY = 'nextstep.state';
+  const UI_KEY = 'nextstep.ui'; // open screen and unsent drafts, so a process survives the app closing
   const PREV_KEY = 'nextstep.state.prev';
   const UNREADABLE_PREFIX = 'nextstep.unreadable.';
+  const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review']);
 
   // Line icons (24×24, stroke).
   const ICONS = {
@@ -44,6 +46,8 @@
     timer: '<path d="M10 2h4M12 14l3-3"/><circle cx="12" cy="14" r="8"/>',
     sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
   };
 
   const OBSTACLES = [
@@ -60,6 +64,7 @@
 
   let S = null;
   let view = { name: 'home' };
+  let UI = { view: null, drafts: {}, sheet: null };
   let welcome = 'normal';
   let longAbsenceHandled = false;
   let askNextDismissed = false;
@@ -90,8 +95,50 @@
     }
   }
 
-  // Run a state change, save it, then redraw.
+  function loadUI() {
+    try { UI = Object.assign(UI, JSON.parse(localStorage.getItem(UI_KEY) || '{}')); } catch (e) { /* start clean */ }
+    UI.drafts = UI.drafts || {};
+  }
+
+  function saveUI() {
+    try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) { /* drafts are best effort */ }
+  }
+
+  // ---------- drafts: every typed value is kept until the form is submitted or abandoned with Back ----------
+
+  const vkey = (v) => [v.name, v.goalId || '', v.actionId || '', v.attemptId || '', v.step || '', v.day || ''].join('|');
+  const draftKey = (id) => vkey(view) + '#' + id;
+  const draft = (id) => UI.drafts[draftKey(id)];
+
+  function setDraft(id, value) {
+    UI.drafts[draftKey(id)] = value;
+    saveUI();
+  }
+
+  function clearDrafts(v) {
+    const prefix = vkey(v || view) + '#';
+    for (const k of Object.keys(UI.drafts)) if (k.startsWith(prefix)) delete UI.drafts[k];
+    saveUI();
+  }
+
+  function applyDrafts(root) {
+    root.querySelectorAll('input[id],textarea[id],select[id]').forEach((el) => {
+      if (el.type === 'file') return;
+      const d = draft(el.id);
+      if (d != null) el.value = d;
+    });
+  }
+
+  const onType = (e) => {
+    const el = e.target;
+    if (el.id && el.matches('input,textarea,select') && el.type !== 'file') setDraft(el.id, el.value);
+  };
+  document.addEventListener('input', onType);
+  document.addEventListener('change', onType);
+
+  // Run a submitted state change, save it, then redraw.
   function act(fn) {
+    clearDrafts();
     fn();
     save();
     render();
@@ -130,14 +177,23 @@
   }
 
   const tap = (fn) => (e) => { buzz(); fn(e); };
-  const iconBtn = (name, label, onclick, badge) =>
-    h('button', { class: 'icon-btn press', 'aria-label': label, title: label, onclick: tap(onclick) }, icon(name), badge ? h('span', { class: 'badge' }, String(badge)) : null);
-  const back = (to) => iconBtn('back', 'Back', () => go(to || 'home'));
-  const topbar = (left, right) => h('div', { class: 'topbar' }, left || h('span'), right || h('span'));
+  const navBtn = (ic, label, onclick, cls) => h('button', { class: 'nav-btn press' + (cls ? ' ' + cls : ''), onclick: tap(onclick) }, icon(ic), label);
+  // Back abandons the current form, so its drafts go too.
+  const back = (to) => navBtn('back', 'Back', () => { clearDrafts(); go(to || 'home'); });
+  const menuBtn = () => navBtn('menu', 'Menu', () => go('menu'));
+  // Same layout on every screen: left = way back (or Today), centre = where you are, right = Menu.
+  const topbar = (left, title, right) => h('div', { class: 'topbar' },
+    left || h('span'),
+    title ? h('span', { class: 'title' }, title) : h('span'),
+    right === undefined ? menuBtn() : right || h('span'));
+  const bigButton = (ic, label, hint, onclick, play) => h('button', { class: 'go-btn press', onclick: tap(onclick) },
+    h('span', { class: 'go' + (play ? ' play' : '') }, icon(ic)),
+    h('span', { class: 'go-label' }, label),
+    hint ? h('span', { class: 'go-hint' }, hint) : null);
   const primary = (label, onclick, ic) => h('button', { class: 'primary press', onclick: tap(onclick) }, ic ? icon(ic) : null, label);
-  const pill = (ic, label, onclick, quiet) => h('button', { class: 'pill press' + (quiet ? ' quiet' : ''), onclick: tap(onclick) }, icon(ic), label);
-  const orb = (ic, label, onclick, badge) =>
-    h('button', { class: 'orb press', onclick: tap(onclick) }, h('span', { class: 'c' }, icon(ic), badge ? h('span', { class: 'badge' }, String(badge)) : null), h('small', {}, label));
+  const pill = (ic, label, onclick, cls) => h('button', { class: 'pill press' + (cls ? ' ' + cls : ''), onclick: tap(onclick) }, icon(ic), label);
+  const orb = (ic, label, onclick, extra) =>
+    h('button', { class: 'orb press', onclick: tap(onclick) }, h('span', { class: 'c' }, icon(ic)), h('span', { class: 'lbl' }, label, extra || null));
   const tile = (ic, label, onclick, opts) => {
     opts = opts || {};
     return h('button', { class: 'tile press ' + (opts.tone || '') + (opts.wide ? ' wide' : ''), onclick: tap(onclick), style: opts.style },
@@ -155,31 +211,60 @@
     return { el: h('div', {}, h('label', { class: 'f', for: a.id }, ic ? icon(ic) : null, label), input), input };
   }
 
-  // A single input with a square confirm button beside it.
-  function inlineInput(attrs, ic, onsubmit) {
+  // A single input with a labelled confirm button beside it.
+  function inlineInput(attrs, label, onsubmit) {
     const input = h('input', Object.assign({ autocomplete: 'off', enterkeyhint: 'done' }, attrs));
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') onsubmit(input.value); });
-    return { el: h('div', { class: 'inline' }, input, h('button', { class: 'square press', 'aria-label': 'Save', onclick: tap(() => onsubmit(input.value)) }, icon(ic || 'check'))), input };
+    return { el: h('div', { class: 'inline' }, input, h('button', { class: 'square press', onclick: tap(() => onsubmit(input.value)) }, icon('check'), label || 'Save')), input };
+  }
+
+  function steps(i, n) {
+    const bars = [];
+    for (let k = 1; k <= n; k++) bars.push(h('span', { class: 'bar' + (k <= i ? ' on' : '') }));
+    return h('div', { class: 'steps', role: 'progressbar', 'aria-valuemin': '1', 'aria-valuemax': String(n), 'aria-valuenow': String(i) },
+      h('div', { class: 'bars' }, bars), h('span', {}, 'Step ' + i + ' of ' + n));
   }
 
   function toast(msg, ic) {
+    document.querySelectorAll('.toast').forEach((t) => t.remove());
     const t = h('div', { class: 'toast', role: 'status' }, ic ? icon(ic) : null, msg);
     document.body.append(t);
-    setTimeout(() => t.remove(), 2600);
+    setTimeout(() => t.remove(), 3500);
   }
 
-  function sheet(build) {
-    const close = () => { scrim.remove(); panel.remove(); };
+  // Bottom sheet with a title and a Close button; Escape closes it too.
+  function sheet(name, title, build, onClose) {
+    const close = () => {
+      scrim.remove();
+      panel.remove();
+      document.removeEventListener('keydown', onKey);
+      if (UI.sheet === name) { UI.sheet = null; saveUI(); }
+      if (onClose) onClose();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
     const scrim = h('div', { class: 'scrim', onclick: close });
-    const panel = h('div', { class: 'sheet', role: 'dialog' }, build(close));
+    const panel = h('div', { class: 'sheet', role: 'dialog', 'aria-label': title },
+      h('div', { class: 'sheet-head' }, h('h2', {}, title), navBtn('x', 'Close', close)),
+      build(close));
     document.body.append(scrim, panel);
+    document.addEventListener('keydown', onKey);
+    UI.sheet = name;
+    saveUI();
+    applyDrafts(panel);
     const inp = panel.querySelector('input,textarea');
     if (inp) setTimeout(() => inp.focus(), 50);
   }
 
   function todayDots() {
     const t = C.today(S, now());
-    return t.items.map((i) => h('span', { class: 'dot' + (i.outcome === 'finished' || i.outcome === 'progress' ? ' full' : ''), title: i.goal }));
+    return t.items.map((i) => h('span', { class: 'dot' + (i.outcome === 'finished' || i.outcome === 'progress' ? ' full' : '') }));
+  }
+
+  function applyPrefs() {
+    const root = document.documentElement;
+    if (S && S.prefs.theme !== 'auto') root.setAttribute('data-theme', S.prefs.theme);
+    else root.removeAttribute('data-theme');
+    document.body.classList.toggle('focus-mode', !!(S && S.prefs.focus));
   }
 
   // ---------- render ----------
@@ -188,8 +273,14 @@
     clearInterval(timer);
     timer = null;
     document.querySelectorAll('.sheet,.scrim').forEach((x) => x.remove());
-    app.replaceChildren(screenFor());
+    applyPrefs();
+    const screen = screenFor();
+    app.replaceChildren(screen);
+    applyDrafts(app);
+    UI.view = RESUMABLE.has(view.name) ? view : null;
+    saveUI();
     window.scrollTo(0, 0);
+    if (view.after) view.after();
   }
 
   function screenFor() {
@@ -208,18 +299,17 @@
       case 'saved': return savedThoughtsScreen();
       case 'backup': return backupScreen();
       case 'review': return reviewScreen();
+      case 'settings': return settingsScreen();
       default: return homeScreen();
     }
   }
 
   // ---------- home ----------
 
-  function homeTopbar() {
+  function homeLeft() {
     const t = C.today(S, now());
-    const left = t.starts
-      ? h('button', { class: 'today-btn press', 'aria-label': 'Today', onclick: tap(() => go('today')) }, todayDots())
-      : h('span');
-    return topbar(left, iconBtn('menu', 'Menu', () => go('menu')));
+    if (!t.starts) return h('span');
+    return h('button', { class: 'nav-btn press hide-in-focus', onclick: tap(() => go('today')) }, h('span', { class: 'dots' }, todayDots()), 'Today');
   }
 
   function homeScreen() {
@@ -239,7 +329,8 @@
     const g = C.goalById(S, rec.goalId);
     const cp = C.checkpointFor(S, rec.id);
     const dl = g.deadline && C.daysUntil(g.deadline, now()) >= 0 ? (g.deadlineLabel || 'Due') + ' ' + C.formatDate(g.deadline) : '';
-    const greeting = welcome === 'back' || welcome === 'long' ? h('p', { class: 'muted', style: 'margin:0 0 14px;text-align:center' }, 'Welcome back 👋') : null;
+    const greeting = welcome === 'back' || welcome === 'long' ? h('p', { class: 'muted', style: 'margin:0 0 12px;text-align:center' }, 'Welcome back') : null;
+    const startHint = C.isUrl(rec.resource) ? 'Opens your link' : !rec.resource && !rec.resourceAsked ? 'Asks where the material is, once' : rec.resource ? 'Shows: ' + rec.resource : '';
 
     const card = h('div', { class: 'card stack', style: hueStyle(g) },
       emoji(g),
@@ -252,21 +343,19 @@
     enableSwipe(card, () => go('another'));
 
     return h('section', { class: 'screen' },
-      homeTopbar(),
-      notices(),
+      topbar(homeLeft(), null),
+      h('div', { class: 'hide-in-focus' }, notices()),
       h('div', { class: 'center' },
         greeting,
         card,
-        h('p', { class: 'swipe-hint' }, '← swipe for another'),
-        h('div', { class: 'stack', style: 'margin-top:14px' },
-          h('button', { class: 'go play press', 'aria-label': 'Start', onclick: tap(() => onStart(rec)) }, icon('play')),
-          h('div', { class: 'go-label' }, 'START')),
-        h('div', { class: 'actions-row' },
-          pill('smaller', 'Smaller', () => go('smaller', { actionId: rec.id })),
-          pill('shuffle', 'Another', () => go('another')))));
+        h('div', { class: 'stack', style: 'margin-top:14px' }, bigButton('play', 'Start', startHint, () => onStart(rec), true)),
+        h('div', { class: 'actions-row hide-in-focus' },
+          pill('smaller', 'Make it smaller', () => go('smaller', { actionId: rec.id })),
+          pill('shuffle', 'Pick another', () => go('another'))),
+        h('p', { class: 'hint hide-in-focus' }, 'Or swipe the card sideways to pick another')));
   }
 
-  // Horizontal swipe on the card; vertical scrolling is left alone.
+  // Horizontal swipe on the card; vertical scrolling is left alone. Buttons offer the same action.
   function enableSwipe(el, onSwipe) {
     let x0 = null, y0 = 0, dx = 0;
     el.addEventListener('pointerdown', (e) => { x0 = e.clientX; y0 = e.clientY; dx = 0; el.classList.add('dragging'); });
@@ -274,8 +363,7 @@
       if (x0 == null) return;
       dx = e.clientX - x0;
       if (Math.abs(e.clientY - y0) > Math.abs(dx)) return;
-      el.style.transform = 'translateX(' + dx + 'px) rotate(' + dx / 40 + 'deg)';
-      el.style.opacity = String(1 - Math.min(Math.abs(dx) / 400, 0.5));
+      el.style.transform = 'translateX(' + dx + 'px)';
     });
     const end = () => {
       if (x0 == null) return;
@@ -283,12 +371,11 @@
       el.classList.remove('dragging');
       if (Math.abs(dx) > 90) {
         buzz();
-        el.style.transform = 'translateX(' + (dx > 0 ? 120 : -120) + '%)';
+        el.style.transform = 'translateX(' + (dx > 0 ? 110 : -110) + '%)';
         el.style.opacity = '0';
-        setTimeout(onSwipe, 180);
+        setTimeout(onSwipe, 250);
       } else {
         el.style.transform = '';
-        el.style.opacity = '';
       }
     };
     el.addEventListener('pointerup', end);
@@ -300,20 +387,20 @@
     const note = (ic, text, ...buttons) => h('div', { class: 'note' }, icon(ic), h('div', { class: 'grow' }, text), ...buttons);
     const tl = (label, fn) => h('button', { class: 'textlink press', onclick: tap(fn) }, label);
     if (S.exampleNote) {
-      out.push(note('pencil', 'Example goals. Make them yours.',
-        tl('Edit', () => { S.exampleNote = false; save(); go('goals'); }),
-        iconBtn('x', 'Dismiss', () => act(() => { S.exampleNote = false; }))));
+      out.push(note('pencil', 'These are example goals.',
+        tl('Edit goals', () => { S.exampleNote = false; save(); go('goals'); }),
+        tl('Hide', () => act(() => { S.exampleNote = false; }))));
     }
     for (const g of C.passedDeadlines(S, now())) {
       out.push(note('flag', (g.deadlineLabel || 'Deadline') + ' for ' + g.name + ' was ' + C.formatDate(g.deadline) + '.',
-        tl('Update', () => go('goal', { goalId: g.id })),
-        iconBtn('x', 'Remove date', () => act(() => { g.deadline = null; g.deadlineLabel = ''; }))));
+        tl('Change date', () => go('goal', { goalId: g.id })),
+        tl('Remove date', () => { act(() => { g.deadline = null; g.deadlineLabel = ''; }); toast('Date removed', 'check'); })));
     }
     const day = C.dueReview(S, now());
     if (day) {
-      out.push(note('chart', 'A quick look back is ready.',
+      out.push(note('chart', 'A two-minute look back is ready.',
         tl('Open', () => go('review', { day })),
-        iconBtn('x', 'Not now', () => act(() => S.reviewsSeen.push(day)))));
+        tl('Not now', () => act(() => S.reviewsSeen.push(day)))));
     }
     return out;
   }
@@ -325,6 +412,7 @@
 
   function doStart(a) {
     welcome = 'normal';
+    clearDrafts();
     const att = C.start(S, a.id, now());
     if (C.isUrl(a.resource)) {
       window.open(a.resource.trim(), '_blank', 'noopener');
@@ -332,6 +420,7 @@
     }
     save();
     go('home');
+    toast('Started', 'play');
   }
 
   // START asks for a missing resource once.
@@ -339,61 +428,62 @@
     const a = C.actionById(S, view.actionId);
     if (!a) return homeScreen();
     const g = C.goalById(S, a.goalId);
-    const inp = inlineInput({ id: 'res', placeholder: 'Link, or where it is' }, 'play', (v) => {
+    const inp = inlineInput({ id: 'res', placeholder: 'Link, or where it is' }, 'Save and start', (v) => {
       a.resource = v.trim();
       a.resourceAsked = true;
       doStart(a);
     });
     return h('section', { class: 'screen' },
-      topbar(back()),
+      topbar(back(), 'Material'),
       h('div', { class: 'center stack' },
         emoji(g),
-        h('h2', { style: 'margin-top:16px' }, 'Where is the material?'),
+        h('h2', { style: 'margin-top:14px' }, 'Where is the material?'),
+        h('p', { class: 'muted', style: 'margin:-6px 0 16px' }, 'Asked once. A link opens automatically next time.'),
         h('div', { style: 'width:100%' }, inp.el),
-        h('div', { class: 'actions-row' }, pill('arrow', 'Nothing needed', () => { a.resourceAsked = true; doStart(a); }, true))));
+        h('div', { class: 'actions-row' }, pill('arrow', 'Start without material', () => { a.resourceAsked = true; doStart(a); }, 'quiet'))));
   }
 
   function askNextScreen(g) {
-    const inp = inlineInput({ id: 'next', placeholder: 'e.g. Open chapter 3' }, 'check', (v) => {
+    const inp = inlineInput({ id: 'next', placeholder: 'e.g. Open chapter 3' }, 'Save', (v) => {
       if (!v.trim()) return inp.input.focus();
       act(() => C.setNextStep(S, g.id, v));
+      toast('Next step saved', 'check');
     });
     return h('section', { class: 'screen' },
-      homeTopbar(),
+      topbar(homeLeft(), null),
       h('div', { class: 'center stack' },
         emoji(g),
-        h('h1', { style: 'margin:16px 0 6px' }, g.name),
-        h('p', { class: 'muted', style: 'margin:0 0 18px' }, 'What should open next time?'),
+        h('h1', { style: 'margin:14px 0 6px' }, g.name),
+        h('p', { class: 'muted', style: 'margin:0 0 16px' }, 'What should open next time?'),
         h('div', { style: 'width:100%' }, inp.el),
         h('div', { class: 'actions-row' },
-          pill('clock', 'Not now', () => { askNextDismissed = true; render(); }, true),
-          pill('archive', 'Later', () => act(() => C.setGoalStatus(S, g.id, 'later')), true))));
+          pill('clock', 'Ask me later', () => { askNextDismissed = true; render(); }, 'quiet'),
+          pill('archive', 'Move goal to later', () => { act(() => C.setGoalStatus(S, g.id, 'later')); toast('Moved to later', 'archive'); }, 'quiet'))));
   }
 
   function emptyScreen() {
     const resting = S.goals.filter((g) => g.status !== 'active');
     const activeNoStep = C.goalsNeedingNext(S);
     return h('section', { class: 'screen' },
-      homeTopbar(),
+      topbar(homeLeft(), null),
       h('div', { class: 'center' },
         h('div', { class: 'stack' },
-          h('div', { style: 'font-size:56px' }, '🌱'),
+          h('div', { style: 'font-size:52px' }, '🌱'),
           h('h2', { style: 'margin-top:10px' }, S.goals.length ? 'Nothing active right now' : 'What would you like to start?'),
-          h('button', { class: 'go press', 'aria-label': 'Add a goal', onclick: tap(() => go('goal', { goalId: null })) }, icon('plus')),
-          h('div', { class: 'go-label' }, 'ADD A GOAL')),
+          bigButton('plus', 'Add a goal', null, () => go('goal', { goalId: null }))),
         activeNoStep.length ? h('div', { class: 'spaced' },
           h('div', { class: 'section-label' }, 'Needs a next step'),
-          h('div', { class: 'list' }, activeNoStep.map((g) => goalRow(g, 'Choose next step', () => act(() => { askNextDismissed = false; g.needsNext = true; }))))) : null,
+          h('div', { class: 'list' }, activeNoStep.map((g) => goalRow(g, 'Tap to choose its next step', () => act(() => { askNextDismissed = false; g.needsNext = true; }))))) : null,
         resting.length ? h('div', { class: 'spaced' },
-          h('div', { class: 'section-label' }, 'Resting'),
-          h('div', { class: 'list' }, resting.map((g) => goalRow(g, 'Tap to bring back', () => act(() => C.setGoalStatus(S, g.id, 'active')), 'play')))) : null));
+          h('div', { class: 'section-label' }, 'Resting goals'),
+          h('div', { class: 'list' }, resting.map((g) => goalRow(g, 'Tap to make active again', () => { act(() => C.setGoalStatus(S, g.id, 'active')); toast(g.name + ' is active', 'check'); })))) : null));
   }
 
   function goalRow(g, sub, onclick, trailing) {
     return h('button', { class: 'row-item press' + (g.status !== 'active' ? ' dim' : ''), onclick: tap(onclick) },
       emoji(g, 'sm'),
       h('div', { class: 'grow' }, h('div', { class: 't' }, g.name), sub ? h('div', { class: 's' }, sub) : null),
-      trailing ? icon(trailing) : null);
+      trailing || null);
   }
 
   function longAbsenceScreen() {
@@ -401,27 +491,29 @@
     const choice = {};
     active.forEach((g) => { choice[g.id] = 'active'; });
     const rows = active.map((g) => {
-      const btn = h('button', { class: 'row-item press' });
+      const btn = h('button', { class: 'row-item press', role: 'switch' });
       const paint = () => {
         const kept = choice[g.id] === 'active';
+        btn.setAttribute('aria-checked', String(kept));
         btn.classList.toggle('dim', !kept);
-        btn.replaceChildren(emoji(g, 'sm'), h('div', { class: 'grow' }, h('div', { class: 't' }, g.name)),
-          h('span', { class: 'pill', style: 'padding:6px 12px' }, icon(kept ? 'check' : 'archive'), kept ? 'Keep' : 'Later'));
+        btn.replaceChildren(emoji(g, 'sm'), h('div', { class: 'grow' }, h('div', { class: 't' }, g.name), h('div', { class: 's' }, kept ? 'Keep active' : 'Move to later')),
+          h('span', { class: 'switch' }));
       };
       btn.onclick = tap(() => { choice[g.id] = choice[g.id] === 'active' ? 'later' : 'active'; paint(); });
       paint();
       return btn;
     });
     return h('section', { class: 'screen' },
-      topbar(null, pill('arrow', 'Skip', () => { longAbsenceHandled = true; render(); }, true)),
+      topbar(null, 'Welcome back', navBtn('arrow', 'Skip', () => { longAbsenceHandled = true; render(); })),
       h('div', { class: 'center' },
-        h('div', { class: 'stack' }, h('div', { style: 'font-size:48px' }, '👋'), h('h2', { style: 'margin-top:8px' }, 'Welcome back'),
-          h('p', { class: 'muted', style: 'margin:-8px 0 18px' }, 'Tap any that can wait.')),
+        h('div', { class: 'stack' }, h('h2', {}, 'Which goals still fit right now?'),
+          h('p', { class: 'muted', style: 'margin:-6px 0 18px' }, 'Optional. Switch off any that can wait. They stay saved.')),
         h('div', { class: 'list' }, rows),
-        primary('Continue', () => {
+        primary('Save and continue', () => {
           longAbsenceHandled = true;
           act(() => active.forEach((g) => { if (choice[g.id] !== 'active') C.setGoalStatus(S, g.id, choice[g.id]); }));
-        }, 'arrow')));
+          toast('Saved', 'check');
+        }, 'check')));
   }
 
   // ---------- in progress ----------
@@ -435,19 +527,23 @@
     const cp = C.checkpointFor(S, a.id);
     const checkinSlot = h('div', { style: 'width:100%' });
 
-    // Park a thought in a bottom sheet; the bulb's badge counts what was parked.
+    // Park a thought in a bottom sheet; the label counts what was parked.
     const parkSlot = h('span', { style: 'display:contents' });
-    const paintPark = () => parkSlot.replaceChildren(orb('bulb', 'Park thought', openPark, C.thoughtsFor(S, att.id).length));
+    const paintPark = () => {
+      const n = C.thoughtsFor(S, att.id).length;
+      parkSlot.replaceChildren(orb('bulb', 'Park a thought', openPark, n ? h('span', { class: 'count' }, ' (' + n + ')') : null));
+    };
     function openPark() {
-      sheet((close) => {
-        const inp = inlineInput({ id: 'park', placeholder: 'Park a stray thought…' }, 'check', (v) => {
+      sheet('park', 'Park a thought', (close) => {
+        const inp = inlineInput({ id: 'park', placeholder: 'What came to mind?' }, 'Park it', (v) => {
           if (!C.parkThought(S, v, att.id, now())) return inp.input.focus();
           save();
+          delete UI.drafts[draftKey('park')];
           close();
           paintPark();
-          toast('Parked for later', 'bulb');
+          toast('Parked. You will see it when you finish', 'bulb');
         });
-        return [h('div', { class: 'stack' }, icon('bulb'), h('p', { class: 'muted', style: 'margin:6px 0 14px' }, 'Saved for after. Back to it.')), inp.el];
+        return [h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'It is saved for after, so you can get back to work.'), inp.el];
       });
     }
     paintPark();
@@ -457,7 +553,7 @@
       if (now() - since < g.checkinMinutes * 60000) return;
       const dismiss = () => { att.checkinShown = true; save(); checkinSlot.replaceChildren(); };
       checkinSlot.replaceChildren(h('div', { class: 'note' }, icon('clock'),
-        h('div', { class: 'grow' }, g.checkinMinutes + ' min in'),
+        h('div', { class: 'grow' }, g.checkinMinutes + ' minutes in.'),
         h('button', { class: 'textlink press', onclick: tap(dismiss) }, 'Keep going'),
         h('button', { class: 'textlink press', onclick: tap(() => { dismiss(); go('finish', { attemptId: att.id }); }) }, 'Wrap up')));
     };
@@ -469,34 +565,35 @@
 
     const orbs = [];
     if (C.isUrl(a.resource)) {
-      orbs.push(orb('open', 'Open', () => {
+      orbs.push(orb('open', 'Open link', () => {
         window.open(a.resource.trim(), '_blank', 'noopener');
         C.recordLaunch(S, att.id, now());
         save();
       }));
     }
     orbs.push(parkSlot);
-    orbs.push(orb('shuffle', 'Switch', () => go('another', { switching: true })));
+    orbs.push(orb('shuffle', 'Switch task', () => go('another', { switching: true })));
+
+    if (UI.sheet === 'park') view.after = () => { delete view.after; openPark(); };
 
     return h('section', { class: 'screen', style: hueStyle(g) },
-      topbar(h('span', { class: 'chip', style: hueStyle(g) }, h('span', { class: 'breath' }), 'In progress'), iconBtn('menu', 'Menu', () => go('menu'))),
+      topbar(h('span'), h('span', {}, h('span', { class: 'dot-static' }), ' In progress')),
       h('div', { class: 'center stack' },
         emoji(g),
-        h('h2', { style: 'margin:14px 0 4px' }, a.text),
+        h('h2', { style: 'margin:12px 0 2px' }, a.text),
         h('div', { class: 'chips', style: 'margin-top:8px' },
           cp ? h('span', { class: 'chip' }, icon('bookmark'), cp) : null,
           a.resource && !C.isUrl(a.resource) ? h('span', { class: 'chip' }, icon('link'), a.resource) : null,
           a.target ? h('span', { class: 'chip' }, icon('target'), a.target) : null),
-        h('div', { class: 'elapsed', 'aria-label': 'Minutes since start' }, elapsedNum, h('small', {}, 'min')),
-        h('p', { class: 'muted', style: 'margin:0 0 22px;font-size:14px' }, 'since you started'),
+        h('div', { class: 'elapsed', 'aria-label': mins() + ' minutes since you started' }, elapsedNum, h('small', {}, 'min')),
+        h('p', { class: 'muted', style: 'margin:0 0 20px' }, 'since you started'),
         checkinSlot,
         h('div', { class: 'orbs' }, orbs)),
-      h('div', { class: 'bottom stack' },
-        h('button', { class: 'go press', style: 'width:88px;height:88px', 'aria-label': 'Finish', onclick: tap(() => go('finish', { attemptId: att.id })) }, icon('check')),
-        h('div', { class: 'go-label' }, 'FINISH')));
+      h('div', { class: 'bottom stack', style: 'margin-top:20px' },
+        bigButton('check', 'Finish', 'Saves how it went', () => go('finish', { attemptId: att.id }))));
   }
 
-  // ---------- finish (at most two taps) ----------
+  // ---------- finish (at most two taps, with a step indicator) ----------
 
   function finishScreen() {
     const att = S.attempts.find((x) => x.id === view.attemptId);
@@ -504,13 +601,16 @@
     const a = C.actionById(S, att.actionId);
     const g = C.goalById(S, att.goalId);
     const step = view.step;
+    const hasThoughts = C.thoughtsFor(S, att.id).length > 0;
+    const total = hasThoughts ? 3 : 2;
 
     const complete = (outcome, opts) => {
       const r = C.finish(S, att.id, outcome, opts, now());
+      clearDrafts();
       if (!r.changed) return go('home');
       save();
-      const afterView = { attemptId: att.id, outcome, goalId: att.goalId, nextId: r.next ? r.next.id : null, deferred: !!(opts && opts.deferred) };
-      if (C.thoughtsFor(S, att.id).length) go('thoughts', { attemptId: att.id, after: afterView });
+      const afterView = { outcome, goalId: att.goalId, nextId: r.next ? r.next.id : null, deferred: !!(opts && opts.deferred) };
+      if (C.thoughtsFor(S, att.id).length) go('thoughts', { attemptId: att.id, total, then: afterView });
       else go('after', afterView);
     };
 
@@ -519,54 +619,59 @@
       const hasNext = C.goalActions(S, a.goalId).some((x) => !x.done && x.id !== a.id);
       const o = (k, fn) => tile(OUTCOME[k].icon, OUTCOME[k].label, fn, { tone: OUTCOME[k].tone });
       body = [
+        steps(1, total),
         h('h2', { style: 'text-align:center' }, 'How did it go?'),
         h('div', { class: 'tiles three' },
           o('finished', () => (hasNext ? complete('finished') : go('finish', { attemptId: att.id, step: 'next' }))),
           o('progress', () => go('finish', { attemptId: att.id, step: 'progress' })),
           o('stuck', () => go('finish', { attemptId: att.id, step: 'stuck' }))),
-        h('div', { class: 'actions-row' }, pill('play', 'Keep going', () => go('home'), true)),
+        h('div', { class: 'actions-row' }, pill('play', 'Not finished: back to it', () => { clearDrafts(); go('home'); }, 'quiet')),
       ];
     } else if (step === 'progress') {
-      const inp = inlineInput({ id: 'pos', value: C.checkpointFor(S, a.id), placeholder: 'e.g. 18:10, page 4' }, 'check', (v) => complete('progress', { position: v }));
-      body = [h('div', { class: 'stack' }, icon('bookmark'), h('h2', { style: 'margin-top:10px' }, 'Where did you stop?')), inp.el];
+      const inp = inlineInput({ id: 'pos', value: C.checkpointFor(S, a.id), placeholder: 'e.g. 18:10, page 4' }, 'Save', (v) => complete('progress', { position: v }));
+      body = [steps(2, total), h('div', { class: 'stack' }, icon('bookmark'), h('h2', { style: 'margin-top:10px' }, 'Where did you stop?')), inp.el];
     } else if (step === 'next') {
-      const inp = inlineInput({ id: 'next', placeholder: 'e.g. Start lecture 5' }, 'check', (v) => complete('finished', { nextText: v, deferred: !v.trim() }));
+      const inp = inlineInput({ id: 'next', placeholder: 'e.g. Start lecture 5' }, 'Save', (v) => complete('finished', { nextText: v, deferred: !v.trim() }));
       body = [
-        h('div', { class: 'stack' }, icon('arrow'), h('h2', { style: 'margin-top:10px' }, 'What opens next time?')),
+        steps(2, total),
+        h('div', { class: 'stack' }, icon('arrow'), h('h2', { style: 'margin-top:10px' }, 'What should open next time?')),
         inp.el,
-        h('div', { class: 'actions-row' }, pill('clock', 'Decide later', () => complete('finished', { deferred: true }), true)),
+        h('div', { class: 'actions-row' }, pill('clock', 'Decide next time', () => complete('finished', { deferred: true }), 'quiet')),
       ];
     } else if (step === 'stuck') {
       body = [
+        steps(2, total),
         h('h2', { style: 'text-align:center' }, 'What got in the way?'),
         h('div', { class: 'tiles' }, OBSTACLES.map((o) => tile(o.icon, o.label, () => complete('stuck', { obstacle: o.key })))),
-        h('div', { class: 'actions-row' }, pill('arrow', 'Skip', () => complete('stuck', {}), true)),
+        h('div', { class: 'actions-row' }, pill('arrow', 'Skip this question', () => complete('stuck', {}), 'quiet')),
       ];
     }
-    return h('section', { class: 'screen', style: hueStyle(g) },
-      topbar(step ? iconBtn('back', 'Back', () => go('finish', { attemptId: att.id })) : back(), emoji(g, 'xs')),
-      h('div', { class: 'center' }, body));
+    const backTo = step ? navBtn('back', 'Back', () => { clearDrafts(); go('finish', { attemptId: att.id }); }) : back();
+    return h('section', { class: 'screen', style: hueStyle(g) }, topbar(backTo, g.icon + ' Finish'), h('div', { class: 'center' }, body));
   }
 
   function thoughtsScreen() {
     const list = C.thoughtsFor(S, view.attemptId);
     if (!list.length) {
-      view = Object.assign({ name: 'after' }, view.after);
+      view = Object.assign({ name: 'after' }, view.then);
       return afterScreen();
     }
     return h('section', { class: 'screen' },
+      topbar(null, 'Finish'),
       h('div', { class: 'center' },
-        h('div', { class: 'stack' }, icon('bulb'), h('h2', { style: 'margin-top:10px' }, list.length === 1 ? '1 parked thought' : list.length + ' parked thoughts')),
+        steps(view.total || 3, view.total || 3),
+        h('div', { class: 'stack' }, icon('bulb'), h('h2', { style: 'margin-top:10px' }, list.length === 1 ? 'You parked 1 thought' : 'You parked ' + list.length + ' thoughts')),
         h('div', { class: 'list' }, list.map((t) => thoughtRow(t, true))),
-        primary('Keep the rest', () => act(() => list.forEach((t) => C.keepThought(S, t.id))), 'check')));
+        primary('Keep the rest for later', () => { act(() => list.forEach((t) => C.keepThought(S, t.id))); toast('Kept in Thoughts', 'check'); }, 'check')));
   }
 
   function thoughtRow(t, withKeep) {
-    return h('div', { class: 'row-item' },
-      h('div', { class: 'grow' }, h('div', {}, t.text)),
-      iconBtn('target', 'Make it a goal', () => { act(() => C.thoughtToGoal(S, t.id, now())); toast('Saved as a goal for later', 'target'); }),
-      withKeep ? iconBtn('archive', 'Keep for later', () => act(() => C.keepThought(S, t.id))) : null,
-      iconBtn('trash', 'Delete', () => act(() => C.deleteThought(S, t.id))));
+    return h('div', { class: 'row-item col' },
+      h('div', {}, t.text),
+      h('div', { class: 'btns' },
+        pill('target', 'Make a goal', () => { act(() => C.thoughtToGoal(S, t.id, now())); toast('Added to goals for later', 'target'); }, 'small'),
+        withKeep ? pill('archive', 'Keep', () => { act(() => C.keepThought(S, t.id)); toast('Kept in Thoughts', 'check'); }, 'small') : null,
+        pill('trash', 'Delete', () => { act(() => C.deleteThought(S, t.id)); toast('Deleted', 'trash'); }, 'small')));
   }
 
   function afterScreen() {
@@ -581,13 +686,14 @@
 
     if (v.outcome === 'stuck') {
       return h('section', { class: 'screen' },
+        topbar(null, null),
         h('div', { class: 'center' },
-          h('div', { class: 'stack' }, h('div', { style: 'font-size:52px' }, '🌤️'), h('h2', { style: 'margin-top:8px' }, "That's fine"),
-            h('p', { class: 'muted', style: 'margin:-8px 0 22px' }, 'Nothing changed. It will be here.')),
+          h('div', { class: 'stack' }, h('div', { style: 'font-size:48px' }, '🌤️'), h('h2', { style: 'margin-top:8px' }, 'Saved. That is fine'),
+            h('p', { class: 'muted', style: 'margin:-6px 0 20px' }, 'Nothing changed. It will be here when you want it.')),
           h('div', { class: 'tiles three' },
-            tile('smaller', 'Smaller', () => go('smaller', { actionId: v.nextId })),
-            tile('shuffle', 'Another', () => go('another')),
-            tile('moon', 'Rest', () => { doneForNow(); toast('See you later', 'moon'); }))));
+            tile('smaller', 'Make it smaller', () => go('smaller', { actionId: v.nextId })),
+            tile('shuffle', 'Pick another', () => go('another')),
+            tile('moon', 'Rest for now', () => { doneForNow(); toast('Rest is fine. See you later', 'moon'); }))));
     }
 
     const cp = v.outcome === 'progress' && next ? C.checkpointFor(S, next.id) : '';
@@ -595,19 +701,22 @@
     const mark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     mark.setAttribute('viewBox', '0 0 100 100');
     mark.setAttribute('class', 'done-mark');
+    mark.setAttribute('aria-hidden', 'true');
     mark.innerHTML = '<circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="5"/><path d="M30 52 44 66 71 37" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>';
+    const continueLabel = v.outcome === 'progress' ? 'Continue this step' : 'Start the next step';
 
     return h('section', { class: 'screen', style: hueStyle(g) },
+      topbar(null, null),
       h('div', { class: 'center stack' },
         mark,
-        h('h2', {}, 'Saved'),
+        h('h2', { role: 'status' }, v.outcome === 'progress' ? 'Saved your place' : 'Step saved as done'),
         h('div', { class: 'chips', style: 'margin-top:0' },
-          cp ? h('span', { class: 'chip' }, icon('bookmark'), cp) : null,
-          v.outcome === 'finished' && next ? h('span', { class: 'chip' }, icon('arrow'), next.text) : null,
-          v.outcome === 'finished' && !next ? h('span', { class: 'chip' }, icon('clock'), 'Next step: decide later') : null),
-        h('div', { class: 'dots', 'aria-label': 'Today' }, todayDots()),
-        h('div', { class: 'actions-row', style: 'margin-top:34px' },
-          canContinue ? h('button', { class: 'primary press', style: 'width:auto;padding:15px 22px', onclick: tap(() => onStart(next)) }, icon('play'), 'Keep going') : null,
+          cp ? h('span', { class: 'chip' }, icon('bookmark'), 'Restart at: ' + cp) : null,
+          v.outcome === 'finished' && next ? h('span', { class: 'chip' }, icon('arrow'), 'Next: ' + next.text) : null,
+          v.outcome === 'finished' && !next ? h('span', { class: 'chip' }, icon('clock'), 'Next step: decide next time') : null),
+        h('div', { class: 'dots center-row hide-in-focus', 'aria-label': 'Today' }, todayDots()),
+        h('div', { class: 'actions-row', style: 'margin-top:30px' },
+          canContinue ? h('button', { class: 'primary press', style: 'width:auto;padding:14px 20px', onclick: tap(() => onStart(next)) }, icon('play'), continueLabel) : null,
           pill('moon', 'Done for now', doneForNow))));
   }
 
@@ -617,44 +726,55 @@
     const rec = C.actionById(S, S.recommendation.actionId);
     const alts = C.alternatives(S, now());
     const recGoal = rec && C.goalById(S, rec.goalId);
-    const choose = (a) => act(() => { C.chooseAlternative(S, a.id, now()); view = { name: 'home' }; });
+    const choose = (a) => {
+      act(() => { C.chooseAlternative(S, a.id, now()); view = { name: 'home' }; });
+      toast('Switched to ' + goalName(a.goalId), 'shuffle');
+    };
     return h('section', { class: 'screen' },
-      topbar(back(), h('span', { class: 'muted' }, view.switching ? 'Switch to' : 'Pick one')),
+      topbar(back(), view.switching ? 'Switch task' : 'Pick another'),
       h('div', { class: 'center' },
         alts.length
           ? h('div', { class: 'tiles one' }, alts.map((a) => {
             const g = C.goalById(S, a.goalId);
             return tile(emoji(g, 'sm'), g.name, () => choose(a), { wide: true, sub: a.text, style: hueStyle(g) });
           }))
-          : h('div', { class: 'stack' }, h('div', { style: 'font-size:48px' }, '🍃'), h('h2', { style: 'margin-top:8px' }, "That's everything for now")),
+          : h('div', { class: 'stack' }, h('div', { style: 'font-size:44px' }, '🍃'), h('h2', { style: 'margin-top:8px' }, 'That is everything for now')),
         h('div', { class: 'tiles three spaced' },
-          rec ? tile('smaller', 'Smaller', () => go('smaller', { actionId: rec.id })) : null,
-          recGoal ? tile('pause', 'Pause', () => {
+          rec ? tile('smaller', 'Make it smaller', () => go('smaller', { actionId: rec.id })) : null,
+          recGoal ? tile('pause', 'Pause goal', () => {
             act(() => { C.setGoalStatus(S, recGoal.id, 'paused'); view = { name: 'home' }; });
-            toast('Paused. Bring it back in Goals', 'pause');
+            toast(recGoal.name + ' paused. Resume it in Goals', 'pause');
           }, { sub: recGoal.name }) : null,
-          !alts.length ? tile('moon', 'Rest', () => { act(() => { C.endSession(S); view = { name: 'home' }; }); toast('See you later', 'moon'); }) : null,
-          !alts.length && S.recommendation.exclusions.length ? tile('refresh', 'Start over', () => act(() => { C.freshRound(S, now()); view = { name: 'home' }; })) : null)));
+          !alts.length ? tile('moon', 'Rest for now', () => { act(() => { C.endSession(S); view = { name: 'home' }; }); toast('Rest is fine. See you later', 'moon'); }) : null,
+          !alts.length && S.recommendation.exclusions.length ? tile('refresh', 'Show all again', () => { act(() => { C.freshRound(S, now()); view = { name: 'home' }; }); toast('All tasks are back', 'refresh'); }) : null)));
+  }
+
+  function goalName(id) {
+    const g = C.goalById(S, id);
+    return g ? g.name : '';
   }
 
   function smallerScreen() {
     const a = C.actionById(S, view.actionId || S.recommendation.actionId);
     if (!a) return homeScreen();
     const g = C.goalById(S, a.goalId);
-    const apply = (val) => act(() => {
-      C.makeSmaller(S, a.id, val);
-      const cur = C.currentAttempt(S);
-      if (cur && cur.actionId !== a.id) cur.state = 'suspended';
-      S.recommendation.actionId = a.id;
-      view = { name: 'home' };
-    });
+    const apply = (val) => {
+      act(() => {
+        C.makeSmaller(S, a.id, val);
+        const cur = C.currentAttempt(S);
+        if (cur && cur.actionId !== a.id) cur.state = 'suspended';
+        S.recommendation.actionId = a.id;
+        view = { name: 'home' };
+      });
+      toast('Smaller version saved: ' + val, 'check');
+    };
     const suggestions = [['👀', 'Just open it'], ['⏱️', 'Two minutes'], ['📖', 'Read one line'], ['🤏', 'The tiniest first bit']];
-    const inp = inlineInput({ id: 'small', placeholder: 'Or type your own' }, 'check', (v) => v.trim() && apply(v));
+    const inp = inlineInput({ id: 'small', placeholder: 'Or write your own' }, 'Save', (v) => v.trim() && apply(v.trim()));
     return h('section', { class: 'screen', style: hueStyle(g) },
-      topbar(back(), emoji(g, 'xs')),
+      topbar(back(), g.icon + ' Make it smaller'),
       h('div', { class: 'center' },
-        h('div', { class: 'stack' }, icon('smaller'), h('h2', { style: 'margin-top:10px' }, 'Make it smaller')),
-        h('div', { class: 'tiles' }, suggestions.map(([e, label]) => tile(h('div', { style: 'font-size:30px' }, e), label, () => apply(label)))),
+        h('p', { class: 'muted', style: 'text-align:center;margin-bottom:16px' }, 'Pick the smallest useful start. It saves straight away.'),
+        h('div', { class: 'tiles' }, suggestions.map(([e, label]) => tile(h('div', { style: 'font-size:28px' }, e), label, () => apply(label)))),
         h('div', { class: 'spaced' }, inp.el)));
   }
 
@@ -664,34 +784,54 @@
     const kept = S.thoughts.filter((t) => t.status === 'kept').length;
     const t = C.today(S, now());
     return h('section', { class: 'screen' },
-      topbar(back()),
+      topbar(back(), 'Menu', null),
       h('div', { class: 'tiles' },
-        tile('calendar', 'Today', () => go('today'), { sub: t.starts ? t.starts + ' started' : '—' }),
+        tile('calendar', 'Today', () => go('today'), { sub: t.starts ? t.starts + ' started' : 'Nothing yet' }),
         tile('target', 'Goals', () => go('goals'), { sub: S.goals.filter((g) => g.status === 'active').length + ' active' }),
-        tile('bulb', 'Thoughts', () => go('saved'), { sub: kept ? kept + ' saved' : '—' }),
+        tile('bulb', 'Thoughts', () => go('saved'), { sub: kept ? kept + ' saved' : 'None saved' }),
         tile('chart', 'Look back', () => go('review'), { sub: 'Your pattern' }),
-        tile('save', 'Backup', () => go('backup'), { sub: 'Export & restore' })));
+        tile('save', 'Backup', () => go('backup'), { sub: 'Export, restore' }),
+        tile('sliders', 'Display', () => go('settings'), { sub: 'Theme, focus mode' })));
+  }
+
+  function settingsScreen() {
+    const seg = (key, options) => h('div', { class: 'seg', role: 'group' }, options.map(([val, label]) =>
+      h('button', { 'aria-pressed': String(S.prefs[key] === val), onclick: tap(() => { act(() => { S.prefs[key] = val; }); toast('Theme: ' + label, 'check'); }) }, label)));
+    const focusRow = h('button', { class: 'switch-row press', role: 'switch', 'aria-checked': String(!!S.prefs.focus), onclick: tap(() => {
+      act(() => { S.prefs.focus = !S.prefs.focus; });
+      toast(S.prefs.focus ? 'Focus mode on' : 'Focus mode off', 'eye');
+    }) },
+    icon('eye'),
+    h('div', { class: 'grow' }, h('div', {}, 'Focus mode'), h('div', { class: 'muted' }, 'Hides notices, today dots and extra buttons. Only the task and Start stay.')),
+    h('span', { class: 'switch' }));
+    return h('section', { class: 'screen' },
+      topbar(back('menu'), 'Display'),
+      h('label', { class: 'f' }, icon('sun'), 'Theme'),
+      seg('theme', [['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']]),
+      h('div', { class: 'spaced' }, focusRow));
   }
 
   function todayScreen() {
     const t = C.today(S, now());
+    const label = (i) => (i.outcome ? OUTCOME[i.outcome].label : i.state === 'current' ? 'In progress' : 'Set aside');
     const ic = (i) => (i.outcome ? OUTCOME[i.outcome].icon : i.state === 'current' ? 'play' : 'pause');
     return h('section', { class: 'screen' },
-      topbar(back('menu'), h('span', { class: 'muted' }, 'Today')),
+      topbar(back('menu'), 'Today'),
       t.items.length
         ? h('div', { class: 'list' }, t.items.map((i) => {
           const g = S.goals.find((x) => x.name === i.goal);
-          return h('div', { class: 'row-item' }, emoji(g, 'sm'),
-            h('div', { class: 'grow' }, h('div', { class: 't' }, i.goal), h('div', { class: 's' }, new Date(i.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))),
-            h('span', { class: i.outcome ? OUTCOME[i.outcome].tone : 'muted' }, icon(ic(i))));
+          return h('div', { class: 'row-item' + (i.outcome ? ' ' + OUTCOME[i.outcome].tone : '') }, emoji(g, 'sm'),
+            h('div', { class: 'grow' }, h('div', { class: 't' }, i.goal),
+              h('div', { class: 's' }, new Date(i.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · ' + label(i))),
+            icon(ic(i)));
         }))
-        : h('div', { class: 'center stack' }, h('div', { style: 'font-size:48px' }, '☀️'), h('p', { class: 'muted' }, 'Nothing yet today. That is fine.')));
+        : h('div', { class: 'center stack' }, h('div', { style: 'font-size:44px' }, '☀️'), h('p', { class: 'muted' }, 'Nothing yet today. That is fine.')));
   }
 
   function goalsScreen() {
     const groups = [['active', 'Active'], ['paused', 'Paused'], ['later', 'Later']];
     return h('section', { class: 'screen' },
-      topbar(back('menu'), iconBtn('plus', 'Add a goal', () => go('goal', { goalId: null }))),
+      topbar(back('menu'), 'Goals'),
       groups.map(([st, title]) => {
         const gs = S.goals.filter((g) => g.status === st);
         if (!gs.length) return null;
@@ -699,9 +839,10 @@
           h('div', { class: 'section-label' }, title),
           h('div', { class: 'list' }, gs.map((g) => {
             const a = C.currentAction(S, g.id);
-            return goalRow(g, a ? a.text : 'No next step yet', () => go('goal', { goalId: g.id }), 'pencil');
+            return goalRow(g, a ? a.text : 'No next step yet', () => go('goal', { goalId: g.id }), h('span', { class: 'muted', style: 'display:inline-flex;gap:4px;align-items:center' }, icon('pencil'), 'Edit'));
           })));
-      }));
+      }),
+      h('div', { class: 'spaced' }, primary('Add a goal', () => go('goal', { goalId: null }), 'plus')));
   }
 
   function goalEditScreen() {
@@ -710,41 +851,41 @@
     if (!isNew && !g) return goalsScreen();
     const a = g ? C.currentAction(S, g.id) : null;
     const upcoming = g ? C.goalActions(S, g.id).filter((x) => !x.done && x !== a) : [];
-    let pickedIcon = g ? g.icon : C.GOAL_ICONS[S.goals.length % C.GOAL_ICONS.length];
-    let pickedHue = g ? g.hue : C.GOAL_HUES[S.goals.length % C.GOAL_HUES.length];
+    let pickedIcon = draft('icon') || (g ? g.icon : C.GOAL_ICONS[S.goals.length % C.GOAL_ICONS.length]);
+    let pickedHue = draft('hue') != null ? Number(draft('hue')) : g ? g.hue : C.GOAL_HUES[S.goals.length % C.GOAL_HUES.length];
 
     const preview = h('div', {});
     const paintPreview = () => preview.replaceChildren(emoji({ icon: pickedIcon, hue: pickedHue }));
     paintPreview();
     const iconButtons = C.GOAL_ICONS.map((e) => {
-      const b = h('button', { class: 'press', 'aria-pressed': String(e === pickedIcon), 'aria-label': e }, e);
-      b.onclick = tap(() => { pickedIcon = e; iconButtons.forEach((x) => x.setAttribute('aria-pressed', String(x === b))); paintPreview(); });
+      const b = h('button', { class: 'press', 'aria-pressed': String(e === pickedIcon), 'aria-label': 'Use ' + e + ' as the icon' }, e);
+      b.onclick = tap(() => { pickedIcon = e; setDraft('icon', e); iconButtons.forEach((x) => x.setAttribute('aria-pressed', String(x === b))); paintPreview(); });
       return b;
     });
-    const hueButtons = C.GOAL_HUES.map((hv) => {
-      const b = h('button', { class: 'press', style: '--h:' + hv, 'aria-pressed': String(hv === pickedHue), 'aria-label': 'Colour' });
-      b.onclick = tap(() => { pickedHue = hv; hueButtons.forEach((x) => x.setAttribute('aria-pressed', String(x === b))); paintPreview(); });
+    const hueButtons = C.GOAL_HUES.map((hv, i) => {
+      const b = h('button', { class: 'press', style: '--h:' + hv, 'aria-pressed': String(hv === pickedHue), 'aria-label': 'Colour ' + (i + 1) });
+      b.onclick = tap(() => { pickedHue = hv; setDraft('hue', String(hv)); hueButtons.forEach((x) => x.setAttribute('aria-pressed', String(x === b))); paintPreview(); });
       return b;
     });
 
-    const name = field('Goal', 'target', { id: 'g-name', value: g ? g.name : '', placeholder: 'e.g. Automatic Control' });
+    const name = field('Goal name', 'target', { id: 'g-name', value: g ? g.name : '', placeholder: 'e.g. Automatic Control' });
     const text = field('Next action', 'play', { id: 'g-text', value: a ? a.text : '', placeholder: 'e.g. Watch lecture 4 for five minutes' });
-    const res = field('Material', 'link', { id: 'g-res', value: a ? a.resource : '', placeholder: 'Link, or where it is' });
+    const res = field('Material (a link opens on Start)', 'link', { id: 'g-res', value: a ? a.resource : '', placeholder: 'Link, or where it is' });
     const cp = field('Restart point', 'bookmark', { id: 'g-cp', value: a ? C.checkpointFor(S, a.id) : '', placeholder: 'e.g. Lecture 4 · 12:40' });
     const small = field('Small version', 'timer', { id: 'g-small', value: a ? a.small : 'Start with five minutes' });
     const target = field('Optional target', 'target', { id: 'g-target', value: a ? a.target : '', placeholder: 'e.g. Around 20 minutes' });
     const later = field('Steps after this (one per line)', 'list', { id: 'g-later', multiline: true, value: upcoming.map((x) => x.text).join('\n') });
-    const dl = field('Real deadline', 'flag', { id: 'g-dl', type: 'date', value: g && g.deadline ? g.deadline : '' });
+    const dl = field('Real deadline date', 'flag', { id: 'g-dl', type: 'date', value: g && g.deadline ? g.deadline : '' });
     const dlLabel = field('Deadline name', 'flag', { id: 'g-dll', value: g ? g.deadlineLabel : '', placeholder: 'e.g. Exam' });
     const status = h('select', { id: 'g-status' },
       ['active', 'paused', 'later'].map((st) => h('option', { value: st, selected: (g ? g.status : 'active') === st }, { active: 'Active', paused: 'Paused', later: 'Later' }[st])));
     const checkin = h('select', { id: 'g-checkin' },
-      [0, 15, 20, 25, 30, 45, 60].map((m) => h('option', { value: m, selected: (g && g.checkinMinutes || 0) === m }, m ? m + ' min' : 'Off')));
+      [0, 15, 20, 25, 30, 45, 60].map((m) => h('option', { value: m, selected: (g && g.checkinMinutes || 0) === m }, m ? 'After ' + m + ' minutes' : 'Off')));
 
     const onSave = () => {
       const nm = name.input.value.trim();
       const tx = text.input.value.trim();
-      if (!nm) return name.input.focus();
+      if (!nm) { toast('Add a goal name first', 'pencil'); return name.input.focus(); }
       act(() => {
         const t = now();
         const goal = g || C.addGoal(S, { name: nm }, t);
@@ -774,35 +915,39 @@
         S.exampleNote = false;
         view = { name: isNew ? 'home' : 'goals' };
       });
-      toast('Saved', 'check');
+      toast(isNew ? 'Goal added' : 'Goal saved', 'check');
     };
 
-    const more = h('details', {},
-      h('summary', {}, icon('sliders'), 'More'),
+    // Keep "More options" open if anything inside it has an unsaved draft.
+    const moreIds = ['g-cp', 'g-small', 'g-target', 'g-later', 'g-dl', 'g-dll', 'g-status', 'g-checkin'];
+    const more = h('details', { open: moreIds.some((id) => draft(id) != null) },
+      h('summary', {}, icon('sliders'), 'More options: restart point, steps, deadline'),
       cp.el, small.el, target.el, later.el, dl.el, dlLabel.el,
       h('label', { class: 'f', for: 'g-status' }, icon('pause'), 'Status'), status,
-      h('label', { class: 'f', for: 'g-checkin' }, icon('clock'), 'Quiet check-in'), checkin);
+      h('label', { class: 'f', for: 'g-checkin' }, icon('clock'), 'Quiet check-in (a line on screen, never a notification)'), checkin);
 
     return h('section', { class: 'screen' },
-      topbar(back(isNew ? 'home' : 'goals'),
-        g ? iconBtn('trash', 'Delete goal', () => {
-          if (!confirm('Delete “' + g.name + '” and its steps?')) return;
-          act(() => { C.deleteGoal(S, g.id); view = { name: 'goals' }; });
-        }) : null),
+      topbar(back(isNew ? 'home' : 'goals'), isNew ? 'Add a goal' : 'Edit goal'),
       h('div', { class: 'stack' }, preview),
-      h('div', { class: 'spaced picker' }, iconButtons),
+      h('label', { class: 'f' }, 'Icon and colour'),
+      h('div', { class: 'picker' }, iconButtons),
       h('div', { class: 'swatches', style: 'margin-top:12px;justify-content:center' }, hueButtons),
       name.el, text.el, res.el, more,
-      h('div', { class: 'spaced' }, primary('Save', onSave, 'check')));
+      h('div', { class: 'spaced' }, primary(isNew ? 'Add goal' : 'Save changes', onSave, 'check')),
+      g ? h('div', { class: 'actions-row' }, pill('trash', 'Delete this goal', () => {
+        if (!confirm('Delete “' + g.name + '” and all its steps? This cannot be undone.')) return;
+        act(() => { C.deleteGoal(S, g.id); view = { name: 'goals' }; });
+        toast('Goal deleted', 'trash');
+      }, 'quiet')) : null);
   }
 
   function savedThoughtsScreen() {
     const list = S.thoughts.filter((t) => t.status === 'kept');
     return h('section', { class: 'screen' },
-      topbar(back('menu'), h('span', { class: 'muted' }, 'Thoughts')),
+      topbar(back('menu'), 'Thoughts'),
       list.length
         ? h('div', { class: 'list' }, list.map((t) => thoughtRow(t, false)))
-        : h('div', { class: 'center stack' }, icon('bulb'), h('p', { class: 'muted' }, 'Parked thoughts you keep land here.')));
+        : h('div', { class: 'center stack' }, icon('bulb'), h('p', { class: 'muted' }, 'Thoughts you park and keep appear here.')));
   }
 
   function exportJson() {
@@ -828,7 +973,7 @@
     const doImport = (raw) => {
       const r = C.parseState(raw);
       if (!r.state) return toast(r.error || 'That backup looks empty', 'x');
-      if (!confirm('Replace the current data with this backup? The current data is kept as a fallback copy.')) return;
+      if (!confirm('Replace everything in the app with this backup? The current data is kept as a fallback copy.')) return;
       try { localStorage.setItem(PREV_KEY, JSON.stringify(S)); } catch (e) { /* best effort */ }
       S = r.state;
       act(() => { view = { name: 'home' }; });
@@ -840,21 +985,24 @@
     });
     const canShare = navigator.canShare && navigator.canShare({ files: [new File(['{}'], 'x.json', { type: 'application/json' })] });
     return h('section', { class: 'screen' },
-      topbar(back('menu'), h('span', { class: 'muted' }, 'Backup')),
-      h('div', { class: 'note' }, icon('help'), h('div', { class: 'grow' }, 'Stored only on this device. Export now and then.')),
-      h('div', { class: 'tiles spaced' },
-        canShare ? tile('share', 'Share file', () => {
+      topbar(back('menu'), 'Backup'),
+      h('div', { class: 'note' }, icon('help'), h('div', { class: 'grow' }, 'Everything is stored only on this phone. Save a backup now and then.')),
+      h('div', { class: 'section-label' }, 'Save a copy'),
+      h('div', { class: 'tiles' },
+        canShare ? tile('share', 'Share backup file', () => {
           const f = new File([exportJson()], backupName(), { type: 'application/json' });
-          navigator.share({ files: [f], title: 'Next Step backup' }).catch(() => {});
+          navigator.share({ files: [f], title: 'Next Step backup' }).then(() => toast('Backup shared', 'check')).catch(() => {});
         }) : null,
-        tile('save', 'Download', () => download(backupName(), exportJson())),
-        tile('copy', 'Copy text', () => {
-          navigator.clipboard.writeText(exportJson()).then(() => toast('Copied', 'check'), () => toast('Copy did not work here', 'x'));
-        }),
-        tile('restore', 'Restore file', () => file.click()),
-        tile('pencil', 'Paste backup', () => sheet((close) => {
-          const ta = h('textarea', { placeholder: '{ … }', style: 'min-height:140px' });
-          return [ta, h('div', { class: 'spaced' }, primary('Restore', () => { close(); doImport(ta.value); }, 'restore'))];
+        tile('save', 'Download backup file', () => { download(backupName(), exportJson()); toast('Backup downloaded', 'check'); }),
+        tile('copy', 'Copy backup text', () => {
+          navigator.clipboard.writeText(exportJson()).then(() => toast('Backup copied', 'check'), () => toast('Copy did not work here', 'x'));
+        })),
+      h('div', { class: 'section-label' }, 'Restore (replaces current data)'),
+      h('div', { class: 'tiles' },
+        tile('restore', 'Restore from file', () => file.click()),
+        tile('pencil', 'Restore from text', () => sheet('paste', 'Restore from text', (close) => {
+          const ta = h('textarea', { id: 'paste', placeholder: 'Paste the backup text here', style: 'min-height:140px' });
+          return [ta, h('div', { class: 'spaced' }, primary('Replace data with this backup', () => { close(); doImport(ta.value); }, 'restore'))];
         }))),
       file);
   }
@@ -865,45 +1013,51 @@
     const qs = ['When did it help you start?', 'When did you forget it?', 'What would make starting easier?'];
     const inputs = qs.map((q, i) => field(q, null, { id: 'rq' + i, multiline: true }));
     const obstacles = Object.entries(st.obstacles);
-    const th = (ic, label) => h('th', { title: label, 'aria-label': label }, icon(ic));
     return h('section', { class: 'screen' },
-      topbar(back(day ? 'home' : 'menu'), h('span', { class: 'muted' }, 'Look back')),
+      topbar(back(day ? 'home' : 'menu'), 'Look back'),
+      h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'A record, not a score.'),
       h('table', { class: 'stats' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Wk'), th('menu', 'Opened'), th('open', 'Material'), th('play', 'Starts'), th('up', 'Got going'))),
+        h('thead', {}, h('tr', {}, ['Week', 'Opened', 'Link opened', 'Started', 'Got going'].map((x) => h('th', {}, x)))),
         h('tbody', {}, st.weeks.map((w) => h('tr', {}, [w.week, w.opens, w.launches, w.starts, w.began].map((x) => h('td', {}, String(x))))))),
-      obstacles.length ? h('div', { class: 'chips', style: 'justify-content:flex-start' },
-        obstacles.map(([k, n]) => {
-          const o = OBSTACLES.find((x) => x.key === k);
-          return h('span', { class: 'chip' }, icon(o ? o.icon : 'help'), (o ? o.label : k) + ' ×' + n);
-        })) : null,
+      obstacles.length ? h('div', {},
+        h('div', { class: 'section-label' }, 'What got in the way'),
+        h('div', { class: 'chips', style: 'justify-content:flex-start' },
+          obstacles.map(([k, n]) => {
+            const o = OBSTACLES.find((x) => x.key === k);
+            return h('span', { class: 'chip' }, icon(o ? o.icon : 'help'), (o ? o.label : k) + ': ' + n);
+          }))) : null,
       inputs.map((f) => f.el),
-      h('div', { class: 'spaced' }, primary('Save', () => act(() => {
-        S.reviews = S.reviews || [];
-        S.reviews.push({ at: now(), day: day || null, answers: inputs.map((f, i) => ({ q: qs[i], a: f.input.value.trim() })) });
-        if (day && !S.reviewsSeen.includes(day)) S.reviewsSeen.push(day);
-        view = { name: 'home' };
-      }), 'check')));
+      h('div', { class: 'spaced' }, primary('Save answers', () => {
+        act(() => {
+          S.reviews = S.reviews || [];
+          S.reviews.push({ at: now(), day: day || null, answers: inputs.map((f, i) => ({ q: qs[i], a: f.input.value.trim() })) });
+          if (day && !S.reviewsSeen.includes(day)) S.reviewsSeen.push(day);
+          view = { name: 'home' };
+        });
+        toast('Answers saved', 'check');
+      }, 'check')));
   }
 
   function recoverScreen() {
     return h('section', { class: 'screen' },
       h('div', { class: 'center' },
-        h('div', { class: 'stack' }, h('div', { style: 'font-size:48px' }, '🧩'), h('h2', { style: 'margin-top:8px' }, 'Saved data could not be opened'),
-          h('p', { class: 'muted', style: 'margin:-8px 0 20px' }, view.error)),
+        h('div', { class: 'stack' }, h('div', { style: 'font-size:44px' }, '🧩'), h('h2', { style: 'margin-top:8px' }, 'Saved data could not be opened'),
+          h('p', { class: 'muted', style: 'margin:-6px 0 20px' }, view.error)),
         h('div', { class: 'tiles' },
-          view.raw != null ? tile('save', 'Download it first', () => download('next-step-unreadable.json', view.raw)) : null,
-          tile('restore', 'Restore backup', () => { S = S || C.emptyState(now()); go('backup'); })),
-        view.raw != null ? h('div', { class: 'actions-row' }, pill('refresh', 'Start fresh (old data kept)', () => {
+          view.raw != null ? tile('save', 'Download the saved data', () => download('next-step-unreadable.json', view.raw)) : null,
+          tile('restore', 'Restore a backup', () => { S = S || C.emptyState(now()); go('backup'); })),
+        view.raw != null ? h('div', { class: 'actions-row' }, pill('refresh', 'Start fresh (old data is kept)', () => {
           try { localStorage.setItem(UNREADABLE_PREFIX + Date.now(), view.raw); } catch (e) { return toast('Could not keep a copy, so nothing changed', 'x'); }
           S = C.emptyState(now());
           welcome = C.recordOpen(S, now());
           act(() => { view = { name: 'home' }; });
-        }, true)) : null));
+        }, 'quiet')) : null));
   }
 
   // ---------- boot ----------
 
   function boot() {
+    loadUI();
     const r = load();
     if (r.error) {
       view = { name: 'recover', error: r.error, raw: r.raw };
@@ -917,6 +1071,11 @@
     }
     welcome = C.recordOpen(S, now());
     if (welcome === 'first') welcome = 'normal';
+    // Reopen an unfinished process exactly where it was left.
+    if (UI.view && RESUMABLE.has(UI.view.name)) {
+      view = UI.view;
+      longAbsenceHandled = true;
+    }
     save();
     render();
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -930,8 +1089,8 @@
     if (hiddenAt && now() - hiddenAt > 30 * 60000) askNextDismissed = false;
     const w = C.recordOpen(S, now());
     save();
-    if (w !== 'normal') { welcome = w; longAbsenceHandled = false; }
-    if (['home', 'after'].includes(view.name)) render();
+    if (w !== 'normal') { welcome = w; longAbsenceHandled = RESUMABLE.has(view.name); }
+    if (['home', 'after'].includes(view.name) && !UI.sheet) render();
   });
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
