@@ -6,6 +6,7 @@
   const UI_KEY = 'nextstep.ui'; // open screen and unsent drafts, so a process survives the app closing
   const PREV_KEY = 'nextstep.state.prev';
   const UNREADABLE_PREFIX = 'nextstep.unreadable.';
+  const APP_VERSION = 9; // keep in step with VERSION in sw.js
   const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review', 'reminders']);
 
   // Line icons (24×24, stroke).
@@ -71,6 +72,7 @@
   let welcome = 'normal';
   let longAbsenceHandled = false;
   let askNextDismissed = false;
+  let updateReady = false; // a newer version has been installed in the background
   let mascotShown = false; // Pip pops up at most once per app open
   let timer = null;
   const app = document.getElementById('app');
@@ -530,6 +532,11 @@
     const out = [];
     const note = (ic, text, ...buttons) => h('div', { class: 'note' }, icon(ic), h('div', { class: 'grow' }, text), ...buttons);
     const tl = (label, fn) => h('button', { class: 'textlink press', onclick: tap(fn) }, label);
+    if (updateReady) {
+      out.push(note('refresh', 'A new version of the app is ready.',
+        tl('Update now', () => location.reload())));
+      return out; // one notice at a time
+    }
     if (S.exampleNote) {
       out.push(note('pencil', 'These are example goals.',
         tl('Edit goals', () => { S.exampleNote = false; save(); go('goals'); }),
@@ -971,7 +978,9 @@
         tile('chart', 'Look back', () => go('review'), { sub: 'Your pattern' }),
         tile('save', 'Backup', () => go('backup'), { sub: 'Export, restore' }),
         tile('message', 'Reminders', () => go('reminders'), { sub: S.reminders.length ? S.reminders.length + ' pinned' : 'None yet' }),
-        tile('sliders', 'Display', () => go('settings'), { sub: 'Theme, focus mode' })));
+        tile('sliders', 'Display', () => go('settings'), { sub: 'Theme, focus mode' })),
+      h('p', { class: 'muted', style: 'text-align:center;margin-top:18px' }, 'App version ' + APP_VERSION),
+      updateReady ? h('div', { class: 'actions-row' }, pill('refresh', 'Update to the new version', () => location.reload())) : null);
   }
 
   function remindersScreen() {
@@ -1367,7 +1376,18 @@
   });
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      // Look for a new version whenever the app comes back to the front.
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
+    // A new version took over: offer it on Home instead of reloading under you.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || updateReady || !S) return;
+      updateReady = true;
+      if (view.name === 'home' && !C.currentAttempt(S)) render();
+      else toast('A new version is ready. Update from Home or Menu', 'refresh');
+    });
   }
 
   boot();

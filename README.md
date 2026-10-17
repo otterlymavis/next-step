@@ -8,7 +8,7 @@ Phase 1–2 prototype of the execution assistant described in `../PLAN.md`: a ph
 | --- | --- |
 | `core.js` | State, selection rules, attempts, return flow, reminders, and display preferences. No DOM, so it can be tested in Node. |
 | `ui.js` | Screens. Every change is saved to `localStorage` immediately. Unsent form drafts and the open screen of an unfinished process are kept under a separate key, so the process resumes after the app closes. |
-| `sw.js` | Cache-first offline shell: the app opens instantly, and updates arrive on the next open. Bump `VERSION` whenever a file changes. |
+| `sw.js` | Cache-first offline shell: the app opens instantly. A new version installs in the background and Home offers "Update now". Bump `VERSION` here and `APP_VERSION` in `ui.js` together whenever a file changes. |
 | `test/core.test.js` | Phase 2 acceptance gates. |
 
 ## Run
