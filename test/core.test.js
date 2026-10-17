@@ -189,3 +189,28 @@ test('parked thoughts belong to their attempt and can become goals', () => {
   C.keepThought(s, t2.id);
   assert.equal(C.thoughtsFor(s, att.id).length, 0);
 });
+
+test('reminders change only when asked, and survive edits and reloads', () => {
+  let s = C.seedState(T0);
+  assert.equal(C.currentReminder(s), null, 'no strip without reminders');
+  C.addReminder(s, 'Why I am doing this');
+  C.addReminder(s, 'Drink water first');
+  C.addReminder(s, '   ');
+  assert.equal(s.reminders.length, 2, 'blank reminders are ignored');
+  assert.deepEqual([C.currentReminder(s).position, C.currentReminder(s).total], [1, 2]);
+  C.nextReminder(s);
+  assert.equal(C.currentReminder(s).reminder.text, 'Drink water first');
+  C.nextReminder(s);
+  assert.equal(C.currentReminder(s).position, 1, 'wraps around');
+  // moving keeps the same reminder showing
+  C.moveReminder(s, s.reminders[0].id, +1);
+  assert.equal(C.currentReminder(s).reminder.text, 'Why I am doing this');
+  assert.equal(C.currentReminder(s).position, 2);
+  // deleting another keeps the showing one
+  C.deleteReminder(s, s.reminders[0].id);
+  assert.equal(C.currentReminder(s).reminder.text, 'Why I am doing this');
+  s = roundtrip(s);
+  assert.equal(C.currentReminder(s).reminder.text, 'Why I am doing this');
+  C.deleteReminder(s, s.reminders[0].id);
+  assert.equal(C.currentReminder(s), null);
+});

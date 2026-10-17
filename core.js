@@ -31,6 +31,8 @@
       events: [],        // { type: 'open' | 'launch', at, actionId? }
       reviewsSeen: [],   // [7, 14]
       prefs: { theme: 'auto', focus: false }, // theme: auto | light | dark
+      reminders: [],     // { id, text } in display order
+      reminderIndex: 0,  // which reminder is showing
     };
   }
 
@@ -90,6 +92,8 @@
     out.events = s.events || [];
     out.reviewsSeen = s.reviewsSeen || [];
     out.prefs = Object.assign({ theme: 'auto', focus: false }, s.prefs || {});
+    out.reminders = s.reminders || [];
+    out.reminderIndex = s.reminderIndex || 0;
     out.goals.forEach((g, i) => {
       if (!g.icon) g.icon = GOAL_ICONS[i % GOAL_ICONS.length];
       if (g.hue == null) g.hue = GOAL_HUES[i % GOAL_HUES.length];
@@ -449,6 +453,53 @@
     return g;
   }
 
+  // ---------- reminders: pinned notes that change only when asked ----------
+
+  function currentReminder(s) {
+    const n = s.reminders.length;
+    if (!n) return null;
+    const i = ((s.reminderIndex % n) + n) % n;
+    return { reminder: s.reminders[i], position: i + 1, total: n };
+  }
+
+  function nextReminder(s) {
+    if (s.reminders.length) s.reminderIndex = (s.reminderIndex + 1) % s.reminders.length;
+  }
+
+  function addReminder(s, text) {
+    text = (text || '').trim();
+    if (!text) return null;
+    const r = { id: uid('r'), text };
+    s.reminders.push(r);
+    return r;
+  }
+
+  function updateReminder(s, id, text) {
+    const r = s.reminders.find((x) => x.id === id);
+    if (r && text && text.trim()) r.text = text.trim();
+  }
+
+  // Deleting keeps the same reminder on screen where possible.
+  function deleteReminder(s, id) {
+    const showing = currentReminder(s);
+    const i = s.reminders.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    s.reminders.splice(i, 1);
+    if (!s.reminders.length) { s.reminderIndex = 0; return; }
+    const keep = showing && showing.reminder.id !== id ? s.reminders.findIndex((x) => x.id === showing.reminder.id) : Math.min(i, s.reminders.length - 1);
+    s.reminderIndex = keep;
+  }
+
+  // Moves a reminder one place up (-1) or down (+1); the one showing stays showing.
+  function moveReminder(s, id, dir) {
+    const showing = currentReminder(s);
+    const i = s.reminders.findIndex((x) => x.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= s.reminders.length) return;
+    [s.reminders[i], s.reminders[j]] = [s.reminders[j], s.reminders[i]];
+    if (showing) s.reminderIndex = s.reminders.findIndex((x) => x.id === showing.reminder.id);
+  }
+
   // ---------- return flow and evidence ----------
 
   // Records an app open and reports what kind of welcome to show.
@@ -543,6 +594,7 @@
     skipRecommendation, allSkipped, freshRound,
     start, recordLaunch, finish, setNextStep, makeSmaller, endSession,
     parkThought, thoughtsFor, keepThought, deleteThought, thoughtToGoal,
+    currentReminder, nextReminder, addReminder, updateReminder, deleteReminder, moveReminder,
     recordOpen, passedDeadlines, today, dueReview, reviewStats,
     formatDate, formatElapsed, isUrl, daysUntil,
   };

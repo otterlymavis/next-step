@@ -1,5 +1,5 @@
 // Offline cache for the app shell. Bump VERSION when any file changes.
-const VERSION = 'nextstep-v5';
+const VERSION = 'nextstep-v6';
 const FILES = ['./', 'index.html', 'style.css', 'core.js', 'ui.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

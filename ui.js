@@ -6,7 +6,7 @@
   const UI_KEY = 'nextstep.ui'; // open screen and unsent drafts, so a process survives the app closing
   const PREV_KEY = 'nextstep.state.prev';
   const UNREADABLE_PREFIX = 'nextstep.unreadable.';
-  const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review']);
+  const RESUMABLE = new Set(['resource', 'finish', 'thoughts', 'goal', 'smaller', 'review', 'reminders']);
 
   // Line icons (24×24, stroke).
   const ICONS = {
@@ -47,6 +47,9 @@
     sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
     eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    up1: '<path d="m18 15-6-6-6 6"/>',
+    down1: '<path d="m6 9 6 6 6-6"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
   };
 
@@ -228,6 +231,9 @@
   function toast(msg, ic) {
     document.querySelectorAll('.toast').forEach((t) => t.remove());
     const t = h('div', { class: 'toast', role: 'status' }, ic ? icon(ic) : null, msg);
+    // Sit just below the top bar and reminder strip so neither is covered.
+    const anchor = app.querySelector('.reminder-slot:not(:empty)') || app.querySelector('.topbar');
+    if (anchor) t.style.top = Math.round(anchor.getBoundingClientRect().bottom + 8) + 'px';
     document.body.append(t);
     setTimeout(() => t.remove(), 3500);
   }
@@ -276,6 +282,8 @@
     document.querySelectorAll('.sheet,.scrim,.toast').forEach((x) => x.remove());
     applyPrefs();
     const screen = screenFor();
+    const bar = screen.querySelector('.topbar');
+    if (bar && view.name !== 'recover') bar.after(reminderStrip());
     app.replaceChildren(screen);
     applyDrafts(app);
     UI.view = RESUMABLE.has(view.name) ? view : null;
@@ -301,8 +309,30 @@
       case 'backup': return backupScreen();
       case 'review': return reviewScreen();
       case 'settings': return settingsScreen();
+      case 'reminders': return remindersScreen();
       default: return homeScreen();
     }
+  }
+
+  // ---------- reminder strip: pinned, still, changes only when tapped ----------
+
+  function reminderStrip() {
+    const slot = h('div', { class: 'reminder-slot hide-in-focus' });
+    const paint = () => {
+      const cur = C.currentReminder(S);
+      if (!cur) return slot.replaceChildren();
+      const more = cur.total > 1;
+      slot.replaceChildren(h('button', {
+        class: 'reminder press',
+        'aria-label': 'Reminder ' + cur.position + ' of ' + cur.total + ': ' + cur.reminder.text + (more ? '. Tap for the next one.' : ''),
+        onclick: tap(() => { if (!more) return go('reminders'); C.nextReminder(S); save(); paint(); }),
+      },
+      icon('message'),
+      h('span', { class: 'grow' }, cur.reminder.text),
+      h('span', { class: 'muted' }, more ? cur.position + ' of ' + cur.total : 'Edit')));
+    };
+    paint();
+    return slot;
   }
 
   // ---------- home ----------
@@ -792,7 +822,40 @@
         tile('bulb', 'Thoughts', () => go('saved'), { sub: kept ? kept + ' saved' : 'None saved' }),
         tile('chart', 'Look back', () => go('review'), { sub: 'Your pattern' }),
         tile('save', 'Backup', () => go('backup'), { sub: 'Export, restore' }),
+        tile('message', 'Reminders', () => go('reminders'), { sub: S.reminders.length ? S.reminders.length + ' pinned' : 'None yet' }),
         tile('sliders', 'Display', () => go('settings'), { sub: 'Theme, focus mode' })));
+  }
+
+  function remindersScreen() {
+    const add = inlineInput({ id: 'rem-new', placeholder: 'e.g. Drink water first' }, 'Add', (v) => {
+      if (!v.trim()) return add.input.focus();
+      act(() => C.addReminder(S, v));
+      toast('Reminder added', 'check');
+    });
+    const edit = (r) => { UI.sheetFor = r.id; sheet('rem-edit', 'Edit reminder', (close) => {
+      const inp = inlineInput({ id: 'rem-edit', value: r.text }, 'Save', (v) => {
+        if (!v.trim()) return inp.input.focus();
+        delete UI.drafts[draftKey('rem-edit')];
+        close();
+        act(() => C.updateReminder(S, r.id, v));
+        toast('Reminder saved', 'check');
+      });
+      return [inp.el];
+    }); };
+    const reopen = UI.sheet === 'rem-edit' && S.reminders.find((r) => r.id === UI.sheetFor);
+    if (reopen) view.after = () => { delete view.after; edit(reopen); };
+    const rows = S.reminders.map((r, i) => h('div', { class: 'row-item col' },
+      h('div', {}, r.text),
+      h('div', { class: 'btns' },
+        pill('pencil', 'Edit', () => edit(r), 'small'),
+        i > 0 ? pill('up1', 'Move up', () => { act(() => C.moveReminder(S, r.id, -1)); toast('Moved up', 'up1'); }, 'small') : null,
+        i < S.reminders.length - 1 ? pill('down1', 'Move down', () => { act(() => C.moveReminder(S, r.id, 1)); toast('Moved down', 'down1'); }, 'small') : null,
+        pill('trash', 'Delete', () => { act(() => C.deleteReminder(S, r.id)); toast('Reminder deleted', 'trash'); }, 'small'))));
+    return h('section', { class: 'screen' },
+      topbar(back('menu'), 'Reminders'),
+      h('p', { class: 'muted', style: 'margin-bottom:14px' }, 'Short notes in your own words. One shows under the top bar on every screen; tap it for the next. They never move or change by themselves.'),
+      add.el,
+      rows.length ? h('div', { class: 'list spaced' }, rows) : h('p', { class: 'muted spaced', style: 'text-align:center' }, 'No reminders yet. Ideas: why this matters to you, drink water first, phone face down.'));
   }
 
   function settingsScreen() {
@@ -1072,6 +1135,7 @@
     }
     welcome = C.recordOpen(S, now());
     if (welcome === 'first') welcome = 'normal';
+    C.nextReminder(S);
     // Reopen an unfinished process exactly where it was left.
     if (UI.view && RESUMABLE.has(UI.view.name)) {
       view = UI.view;
@@ -1087,7 +1151,12 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') { hiddenAt = now(); return; }
     if (!S || view.name === 'recover') return;
-    if (hiddenAt && now() - hiddenAt > 30 * 60000) askNextDismissed = false;
+    if (hiddenAt && now() - hiddenAt > 30 * 60000) {
+      askNextDismissed = false;
+      C.nextReminder(S);
+      const slot = app.querySelector('.reminder-slot');
+      if (slot) slot.replaceWith(reminderStrip());
+    }
     const w = C.recordOpen(S, now());
     save();
     if (w !== 'normal') { welcome = w; longAbsenceHandled = RESUMABLE.has(view.name); }
