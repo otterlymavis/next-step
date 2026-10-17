@@ -71,9 +71,12 @@
   let welcome = 'normal';
   let longAbsenceHandled = false;
   let askNextDismissed = false;
+  let mascotShown = false; // Pip pops up at most once per app open
   let timer = null;
   const app = document.getElementById('app');
   const now = () => Date.now();
+  const reducedMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const game = () => S && S.prefs.game;
   const buzz = () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) { /* unsupported */ } };
 
   // ---------- storage ----------
@@ -279,7 +282,7 @@
     clearInterval(timer);
     timer = null;
     // A confirmation belongs to the screen it was shown on; actions show theirs after rendering.
-    document.querySelectorAll('.sheet,.scrim,.toast').forEach((x) => x.remove());
+    document.querySelectorAll('.sheet,.scrim,.toast,.mascot').forEach((x) => x.remove());
     applyPrefs();
     const screen = screenFor();
     const bar = screen.querySelector('.topbar');
@@ -302,7 +305,8 @@
       case 'another': return anotherScreen();
       case 'smaller': return smallerScreen();
       case 'menu': return menuScreen();
-      case 'today': return todayScreen();
+      case 'today': return progressHub();
+      case 'progress': return progressHub();
       case 'goals': return goalsScreen();
       case 'goal': return goalEditScreen();
       case 'saved': return savedThoughtsScreen();
@@ -312,6 +316,113 @@
       case 'reminders': return remindersScreen();
       default: return homeScreen();
     }
+  }
+
+  // ---------- game layer ----------
+
+  // Claims today's quest and any new milestones; returns what was earned.
+  function collectRewards() {
+    if (!game()) return { quest: 0, milestones: [] };
+    const quest = C.claimQuest(S, now());
+    const milestones = C.checkMilestones(S, now());
+    return { quest, milestones };
+  }
+
+  // Shows earned rewards as a short confirmation (used where there is no Saved screen).
+  function announce(r) {
+    if (r.milestones.length) toast('Milestone: ' + r.milestones.map((m) => m.icon + ' ' + m.name).join(', '), 'check');
+    else if (r.quest) toast('Daily quest done: +' + r.quest + ' points', 'check');
+  }
+
+  function gameBar() {
+    if (!game()) return null;
+    const st = C.streaks(S, now());
+    const lv = C.levelInfo(C.totalPoints(S));
+    const streakText = st.current ? '🔥 ' + st.current + '-day streak' : '🔥 Start today for a streak';
+    return h('button', { class: 'gamebar press hide-in-focus', onclick: tap(() => go('progress')) },
+      h('span', {}, streakText),
+      h('span', {}, '⭐ ' + lv.points + ' pts · Level ' + lv.level));
+  }
+
+  // Where this step sits among the goal's known steps.
+  function stepMapEl(goalId) {
+    const m = C.stepMap(S, goalId);
+    if (m.total < 2) return null;
+    const dots = [];
+    for (let i = 1; i <= m.total; i++) dots.push(h('span', { class: 'sm-dot' + (i < m.position ? ' done' : i === m.position ? ' here' : '') }));
+    return h('div', { class: 'stepmap', 'aria-label': 'Step ' + m.position + ' of ' + m.total + ' known steps' },
+      h('div', { class: 'sm-dots' }, dots), h('span', {}, 'Step ' + m.position + ' of ' + m.total));
+  }
+
+  function switchRow(ic, title, desc, on, onToggle) {
+    return h('button', { class: 'switch-row press', role: 'switch', 'aria-checked': String(!!on), onclick: tap(onToggle) },
+      icon(ic), h('div', { class: 'grow' }, h('div', {}, title), h('div', { class: 'muted' }, desc)), h('span', { class: 'switch' }));
+  }
+
+  // ---------- Pip, the mascot: pops up on Home at most once per open, never during a task ----------
+
+  function pipMessage() {
+    const st = C.streaks(S, now());
+    const q = C.dailyQuest(S, now());
+    if (welcome === 'back' || welcome === 'long') return 'Welcome back! Your place is saved. There is nothing to catch up on.';
+    if (st.current >= 2 && !st.startedToday) return 'Your ' + st.current + '-day streak is still going. One start today keeps it alive.';
+    if (C.canSpin(S, now())) return 'Your daily spin is ready on the Progress screen.';
+    if (!q.claimed) return "Today's quest: " + q.text + ' (+' + q.bonus + ' points).';
+    if (!S.attempts.length) return "Hi, I'm Pip. Press Start and I'll keep score.";
+    return 'Quest done for today. Anything more is a bonus.';
+  }
+
+  function showPip() {
+    if (!game() || !S.prefs.mascot || S.prefs.focus || mascotShown || document.querySelector('.sheet')) return;
+    if (view.name !== 'home' || C.currentAttempt(S)) return; // never during a task or on another screen
+    mascotShown = true;
+    const close = () => card.remove();
+    const card = h('div', { class: 'mascot', role: 'status' },
+      h('div', { class: 'pip', 'aria-hidden': 'true' }, '🦉'),
+      h('div', { class: 'grow' }, h('b', {}, 'Pip'), h('div', {}, pipMessage())),
+      h('button', { class: 'textlink press', onclick: tap(close) }, 'Thanks, Pip'));
+    // Pops up near the top so it never covers Start.
+    const anchor = app.querySelector('.reminder-slot:not(:empty)') || app.querySelector('.topbar');
+    if (anchor) card.style.top = Math.round(anchor.getBoundingClientRect().bottom + 8) + 'px';
+    document.body.append(card);
+  }
+
+  // ---------- daily spin ----------
+
+  function openSpin() {
+    sheet('spin', 'Daily spin', (close) => {
+      const n = C.SPIN_PRIZES.length;
+      const seg = 360 / n;
+      const parts = C.SPIN_PRIZES.map((p, i) => {
+        const a0 = (i * seg - 90) * Math.PI / 180, a1 = ((i + 1) * seg - 90) * Math.PI / 180, am = ((i + 0.5) * seg - 90) * Math.PI / 180;
+        const x0 = 50 + 48 * Math.cos(a0), y0 = 50 + 48 * Math.sin(a0), x1 = 50 + 48 * Math.cos(a1), y1 = 50 + 48 * Math.sin(a1);
+        return '<path d="M50 50 L' + x0.toFixed(2) + ' ' + y0.toFixed(2) + ' A48 48 0 0 1 ' + x1.toFixed(2) + ' ' + y1.toFixed(2) + ' Z" fill="hsl(' + (i * 60) + ' 40% var(--tint-l))" stroke="var(--line)"/>' +
+          '<text x="' + (50 + 32 * Math.cos(am)).toFixed(2) + '" y="' + (50 + 32 * Math.sin(am)).toFixed(2) + '" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" fill="var(--text)">+' + p + '</text>';
+      }).join('');
+      const wheel = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      wheel.setAttribute('viewBox', '0 0 100 100');
+      wheel.setAttribute('class', 'wheel');
+      wheel.setAttribute('aria-hidden', 'true');
+      wheel.innerHTML = parts;
+      const result = h('p', { class: 'muted', style: 'text-align:center;margin-top:12px', role: 'status' }, 'One spin a day, unlocked by your first start.');
+      const go2 = h('button', { class: 'primary press', onclick: tap(() => {
+        const r = C.spin(S, now());
+        if (!r) return;
+        save();
+        go2.disabled = true;
+        const target = 360 * 4 + (360 - (r.index + 0.5) * seg);
+        const done = () => {
+          result.textContent = 'You won ' + r.points + ' points!';
+          go2.replaceWith(primary('Done', () => { close(); render(); }, 'check'));
+          toast('+' + r.points + ' points from your spin', 'check');
+        };
+        if (reducedMotion()) { wheel.style.transform = 'rotate(' + target + 'deg)'; done(); return; }
+        wheel.style.transition = 'transform 2.4s cubic-bezier(.15,.8,.25,1)';
+        wheel.style.transform = 'rotate(' + target + 'deg)';
+        setTimeout(done, 2450);
+      }) }, '🎡 Spin the wheel');
+      return [h('div', { class: 'wheel-wrap' }, h('div', { class: 'pointer', 'aria-hidden': 'true' }, '▼'), wheel), result, h('div', { class: 'spaced' }, go2)];
+    });
   }
 
   // ---------- reminder strip: pinned, still, changes only when tapped ----------
@@ -340,7 +451,7 @@
   function homeLeft() {
     const t = C.today(S, now());
     if (!t.starts) return h('span');
-    return h('button', { class: 'nav-btn press hide-in-focus', onclick: tap(() => go('today')) }, h('span', { class: 'dots' }, todayDots()), 'Today');
+    return h('button', { class: 'nav-btn press hide-in-focus', onclick: tap(() => go('progress')) }, h('span', { class: 'dots' }, todayDots()), 'Today');
   }
 
   function homeScreen() {
@@ -370,12 +481,15 @@
       h('div', { class: 'chips' },
         cp ? h('span', { class: 'chip' }, icon('bookmark'), cp) : null,
         h('span', { class: 'chip' }, icon('timer'), rec.small),
-        dl ? h('span', { class: 'chip' }, icon('flag'), dl) : null));
+        dl ? h('span', { class: 'chip' }, icon('flag'), dl) : null),
+      stepMapEl(g.id));
     enableSwipe(card, () => go('another'));
+    view.after = () => { delete view.after; setTimeout(showPip, 600); };
 
     return h('section', { class: 'screen' },
       topbar(homeLeft(), null),
       h('div', { class: 'hide-in-focus' }, notices()),
+      gameBar(),
       h('div', { class: 'center' },
         greeting,
         card,
@@ -449,9 +563,11 @@
       window.open(a.resource.trim(), '_blank', 'noopener');
       C.recordLaunch(S, att.id, now());
     }
+    const r = collectRewards();
     save();
     go('home');
-    toast('Started', 'play');
+    if (r.milestones.length || r.quest) announce(r);
+    else toast('Started' + (game() ? ': +' + C.POINTS.start + ' points' : ''), 'play');
   }
 
   // START asks for a missing resource once.
@@ -572,7 +688,10 @@
           delete UI.drafts[draftKey('park')];
           close();
           paintPark();
-          toast('Parked. You will see it when you finish', 'bulb');
+          const r = collectRewards();
+          save();
+          if (r.milestones.length || r.quest) announce(r);
+          else toast('Parked. You will see it when you finish', 'bulb');
         });
         return [h('p', { class: 'muted', style: 'margin-bottom:12px' }, 'It is saved for after, so you can get back to work.'), inp.el];
       });
@@ -616,6 +735,7 @@
           cp ? h('span', { class: 'chip' }, icon('bookmark'), cp) : null,
           a.resource && !C.isUrl(a.resource) ? h('span', { class: 'chip' }, icon('link'), a.resource) : null,
           a.target ? h('span', { class: 'chip' }, icon('target'), a.target) : null),
+        stepMapEl(g.id),
         h('div', { class: 'elapsed', 'aria-label': mins() + ' minutes since you started' }, elapsedNum, h('small', {}, 'min')),
         h('p', { class: 'muted', style: 'margin:0 0 20px' }, 'since you started'),
         checkinSlot,
@@ -636,11 +756,18 @@
     const total = hasThoughts ? 3 : 2;
 
     const complete = (outcome, opts) => {
+      const levelBefore = C.levelInfo(C.totalPoints(S)).level;
       const r = C.finish(S, att.id, outcome, opts, now());
       clearDrafts();
       if (!r.changed) return go('home');
+      const rewards = collectRewards();
       save();
-      const afterView = { outcome, goalId: att.goalId, nextId: r.next ? r.next.id : null, deferred: !!(opts && opts.deferred) };
+      const levelAfter = C.levelInfo(C.totalPoints(S)).level;
+      const afterView = {
+        outcome, goalId: att.goalId, nextId: r.next ? r.next.id : null, deferred: !!(opts && opts.deferred),
+        earned: C.attemptPoints(att), quest: rewards.quest, milestones: rewards.milestones.map((m) => m.icon + ' ' + m.name),
+        levelUp: levelAfter > levelBefore ? levelAfter : 0,
+      };
       if (C.thoughtsFor(S, att.id).length) go('thoughts', { attemptId: att.id, total, then: afterView });
       else go('after', afterView);
     };
@@ -705,6 +832,16 @@
         pill('trash', 'Delete', () => { act(() => C.deleteThought(S, t.id)); toast('Deleted', 'trash'); }, 'small')));
   }
 
+  function rewardsPanel(v) {
+    if (!game()) return null;
+    const lines = [h('div', { class: 'reward-head' }, h('span', { class: 'pip', 'aria-hidden': 'true' }, '🦉'), h('b', {}, '+' + ((v.earned || 0) + (v.quest || 0)) + ' points'))];
+    if (v.quest) lines.push(h('div', {}, '🎯 Daily quest done: +' + v.quest));
+    (v.milestones || []).forEach((m) => lines.push(h('div', {}, '✨ Milestone: ' + m)));
+    if (v.levelUp) lines.push(h('div', {}, '⭐ Level ' + v.levelUp + ': ' + C.levelInfo(C.totalPoints(S)).name));
+    const spinBtn = C.canSpin(S, now()) ? h('div', {}, pill('arrow', '🎡 Daily spin ready', openSpin, 'small')) : null;
+    return h('div', { class: 'rewards hide-in-focus' }, lines, spinBtn);
+  }
+
   function afterScreen() {
     const v = view;
     if (v.deferred) {
@@ -721,6 +858,7 @@
         h('div', { class: 'center' },
           h('div', { class: 'stack' }, h('div', { style: 'font-size:48px' }, '🌤️'), h('h2', { style: 'margin-top:8px' }, 'Saved. That is fine'),
             h('p', { class: 'muted', style: 'margin:-6px 0 20px' }, 'Nothing changed. It will be here when you want it.')),
+          rewardsPanel(v),
           h('div', { class: 'tiles three' },
             tile('smaller', 'Make it smaller', () => go('smaller', { actionId: v.nextId })),
             tile('shuffle', 'Pick another', () => go('another')),
@@ -746,6 +884,7 @@
           v.outcome === 'finished' && next ? h('span', { class: 'chip' }, icon('arrow'), 'Next: ' + next.text) : null,
           v.outcome === 'finished' && !next ? h('span', { class: 'chip' }, icon('clock'), 'Next step: decide next time') : null),
         h('div', { class: 'dots center-row hide-in-focus', 'aria-label': 'Today' }, todayDots()),
+        rewardsPanel(v),
         h('div', { class: 'actions-row', style: 'margin-top:30px' },
           canContinue ? h('button', { class: 'primary press', style: 'width:auto;padding:14px 20px', onclick: tap(() => onStart(next)) }, icon('play'), continueLabel) : null,
           pill('moon', 'Done for now', doneForNow))));
@@ -761,14 +900,27 @@
       act(() => { C.chooseAlternative(S, a.id, now()); view = { name: 'home' }; });
       toast('Switched to ' + goalName(a.goalId), 'shuffle');
     };
+    const altTiles = alts.map((a) => {
+      const g = C.goalById(S, a.goalId);
+      return tile(emoji(g, 'sm'), g.name, () => choose(a), { wide: true, sub: a.text, style: hueStyle(g) });
+    });
+    // Rolls through the options for about a second, then picks one.
+    const pickForMe = () => {
+      const pick = Math.floor(Math.random() * alts.length);
+      if (reducedMotion()) return choose(alts[pick]);
+      const steps = alts.length * 3 + pick;
+      let i = 0;
+      const t = setInterval(() => {
+        altTiles.forEach((el, k) => el.classList.toggle('lit', k === i % alts.length));
+        if (i++ >= steps) { clearInterval(t); setTimeout(() => choose(alts[pick]), 350); }
+      }, 90);
+    };
     return h('section', { class: 'screen' },
       topbar(back(), view.switching ? 'Switch task' : 'Pick another'),
       h('div', { class: 'center' },
+        alts.length > 1 ? h('div', { class: 'actions-row', style: 'margin:0 0 14px' }, pill('shuffle', '🎲 Pick for me', pickForMe)) : null,
         alts.length
-          ? h('div', { class: 'tiles one' }, alts.map((a) => {
-            const g = C.goalById(S, a.goalId);
-            return tile(emoji(g, 'sm'), g.name, () => choose(a), { wide: true, sub: a.text, style: hueStyle(g) });
-          }))
+          ? h('div', { class: 'tiles one' }, altTiles)
           : h('div', { class: 'stack' }, h('div', { style: 'font-size:44px' }, '🍃'), h('h2', { style: 'margin-top:8px' }, 'That is everything for now')),
         h('div', { class: 'tiles three spaced' },
           rec ? tile('smaller', 'Make it smaller', () => go('smaller', { actionId: rec.id })) : null,
@@ -817,7 +969,7 @@
     return h('section', { class: 'screen' },
       topbar(back(), 'Menu', null),
       h('div', { class: 'tiles' },
-        tile('calendar', 'Today', () => go('today'), { sub: t.starts ? t.starts + ' started' : 'Nothing yet' }),
+        tile('calendar', game() ? 'Progress' : 'Today', () => go('progress'), { sub: game() ? 'Level ' + C.levelInfo(C.totalPoints(S)).level + ' · ' + C.totalPoints(S) + ' pts' : t.starts ? t.starts + ' started' : 'Nothing yet' }),
         tile('target', 'Goals', () => go('goals'), { sub: S.goals.filter((g) => g.status === 'active').length + ' active' }),
         tile('bulb', 'Thoughts', () => go('saved'), { sub: kept ? kept + ' saved' : 'None saved' }),
         tile('chart', 'Look back', () => go('review'), { sub: 'Your pattern' }),
@@ -868,28 +1020,74 @@
     icon('eye'),
     h('div', { class: 'grow' }, h('div', {}, 'Focus mode'), h('div', { class: 'muted' }, 'Hides notices, today dots and extra buttons. Only the task and Start stay.')),
     h('span', { class: 'switch' }));
+    const gameRow = switchRow('target', 'Game layer', 'Points, levels, streaks, daily quest and spin, milestones and records.', S.prefs.game, () => {
+      act(() => { S.prefs.game = !S.prefs.game; });
+      toast(S.prefs.game ? 'Game layer on' : 'Game layer off', 'target');
+    });
+    const pipRow = switchRow('message', 'Pip the mascot', 'Pops up on Home once per visit, never during a task.', S.prefs.mascot, () => {
+      act(() => { S.prefs.mascot = !S.prefs.mascot; });
+      toast(S.prefs.mascot ? 'Pip is on' : 'Pip is off', 'message');
+    });
     return h('section', { class: 'screen' },
       topbar(back('menu'), 'Display'),
       h('label', { class: 'f' }, icon('sun'), 'Theme'),
       seg('theme', [['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']]),
-      h('div', { class: 'spaced' }, focusRow));
+      h('div', { class: 'spaced' }, focusRow),
+      h('div', { class: 'spaced' }, gameRow),
+      S.prefs.game ? h('div', { class: 'spaced' }, pipRow) : null);
   }
 
-  function todayScreen() {
+  function progressHub() {
+    if (!game()) return todayScreen();
+    const lv = C.levelInfo(C.totalPoints(S));
+    const st = C.streaks(S, now());
+    const q = C.dailyQuest(S, now());
+    const rec = C.records(S);
+    const pct = lv.next ? Math.round(((lv.points - lv.floor) / (lv.next - lv.floor)) * 100) : 100;
+    const fmtDay = (k) => new Date(k + 'T12:00:00').toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+    const spun = S.game.spins[C.dayKey(now())];
+    const spinState = C.canSpin(S, now()) ? pill('arrow', '🎡 Spin the wheel', openSpin)
+      : h('p', { class: 'muted' }, spun ? '🎡 Spin used today: +' + spun.points : '🎡 Daily spin unlocks after your first start today');
+    const ms = C.milestoneList(S);
+    return h('section', { class: 'screen' },
+      topbar(back('menu'), 'Progress'),
+      h('div', { class: 'panel' },
+        h('div', { class: 'lvl-head' }, h('b', {}, '⭐ Level ' + lv.level + ' · ' + lv.name), h('span', { class: 'muted' }, lv.points + ' pts')),
+        h('div', { class: 'lvl-bar', role: 'progressbar', 'aria-label': 'Progress to next level', 'aria-valuenow': String(pct), 'aria-valuemin': '0', 'aria-valuemax': '100' }, h('span', { style: 'width:' + pct + '%' })),
+        h('p', { class: 'muted' }, lv.next ? (lv.next - lv.points) + ' points to Level ' + (lv.level + 1) : 'Top level reached')),
+      h('div', { class: 'tiles spaced' },
+        h('div', { class: 'tile' }, h('div', { style: 'font-size:28px' }, '🔥'), h('b', {}, st.current ? st.current + '-day streak' : 'No streak yet'), h('div', { class: 'sub2' }, 'Best: ' + st.best + (st.best === 1 ? ' day' : ' days'))),
+        h('div', { class: 'tile' }, h('div', { style: 'font-size:28px' }, q.claimed ? '✅' : '🎯'), h('b', {}, q.text), h('div', { class: 'sub2' }, q.claimed ? 'Done: +' + q.bonus : 'Daily quest: +' + q.bonus))),
+      h('div', { class: 'spaced', style: 'text-align:center' }, spinState),
+      h('div', { class: 'section-label' }, 'Milestones (' + ms.filter((m) => m.earnedAt).length + ' of ' + ms.length + ')'),
+      h('div', { class: 'tiles three' }, ms.map((m) => h('div', { class: 'tile badge-tile' + (m.earnedAt ? '' : ' dim') },
+        h('div', { style: 'font-size:28px' }, m.earnedAt ? m.icon : '🔒'), h('b', {}, m.name), m.earnedAt ? null : h('div', { class: 'sub2' }, m.hint)))),
+      h('div', { class: 'section-label' }, 'Your records'),
+      rec.topDays.length
+        ? h('div', { class: 'list' }, rec.topDays.map((d, i) => h('div', { class: 'row-item' },
+          h('b', { style: 'width:2ch' }, String(i + 1)), h('div', { class: 'grow' }, fmtDay(d.day)), h('span', {}, d.points + ' pts'))))
+        : h('p', { class: 'muted' }, 'Your best days will appear here.'),
+      rec.bestWeek ? h('p', { class: 'muted' }, 'Best week: from ' + fmtDay(rec.bestWeek.week) + ', ' + rec.bestWeek.points + ' pts') : null,
+      h('div', { class: 'section-label' }, 'Today'),
+      todayList());
+  }
+
+  function todayList() {
     const t = C.today(S, now());
     const label = (i) => (i.outcome ? OUTCOME[i.outcome].label : i.state === 'current' ? 'In progress' : 'Set aside');
     const ic = (i) => (i.outcome ? OUTCOME[i.outcome].icon : i.state === 'current' ? 'play' : 'pause');
-    return h('section', { class: 'screen' },
-      topbar(back('menu'), 'Today'),
-      t.items.length
-        ? h('div', { class: 'list' }, t.items.map((i) => {
-          const g = S.goals.find((x) => x.name === i.goal);
-          return h('div', { class: 'row-item' + (i.outcome ? ' ' + OUTCOME[i.outcome].tone : '') }, emoji(g, 'sm'),
-            h('div', { class: 'grow' }, h('div', { class: 't' }, i.goal),
-              h('div', { class: 's' }, new Date(i.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · ' + label(i))),
-            icon(ic(i)));
-        }))
-        : h('div', { class: 'center stack' }, h('div', { style: 'font-size:44px' }, '☀️'), h('p', { class: 'muted' }, 'Nothing yet today. That is fine.')));
+    if (!t.items.length) return h('p', { class: 'muted' }, 'Nothing yet today. That is fine.');
+    return h('div', { class: 'list' }, t.items.map((i) => {
+      const g = S.goals.find((x) => x.name === i.goal);
+      return h('div', { class: 'row-item' + (i.outcome ? ' ' + OUTCOME[i.outcome].tone : '') }, emoji(g, 'sm'),
+        h('div', { class: 'grow' }, h('div', { class: 't' }, i.goal),
+          h('div', { class: 's' }, new Date(i.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · ' + label(i))),
+        icon(ic(i)));
+    }));
+  }
+
+  function todayScreen() {
+    return h('section', { class: 'screen' }, topbar(back('menu'), 'Today'), todayList());
   }
 
   function goalsScreen() {

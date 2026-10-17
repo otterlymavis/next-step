@@ -285,3 +285,35 @@ table.stats th { font-weight: 500; color: var(--muted); }
 .reminder > svg.i { width: 18px; height: 18px; color: var(--muted); }
 .reminder .grow { flex: 1; min-width: 0; }
 .reminder .muted { flex: none; }
+
+/* ---------- game layer ---------- */
+.gamebar {
+  width: 100%; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 8px 12px; font-size: 16px; text-align: left; min-height: 44px;
+}
+.stepmap { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; font-size: 16px; color: var(--muted); }
+.sm-dots { display: flex; gap: 6px; align-items: center; }
+.sm-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--muted); }
+.sm-dot.done { background: var(--muted); }
+.sm-dot.here { width: 16px; height: 16px; border-color: var(--text); background: var(--text); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.lvl-head { display: flex; justify-content: space-between; align-items: baseline; }
+.lvl-bar { height: 10px; border-radius: 5px; background: var(--line); margin: 10px 0 8px; overflow: hidden; }
+.lvl-bar span { display: block; height: 100%; background: var(--muted); border-radius: 5px; }
+.badge-tile { min-height: 96px; box-shadow: none; }
+.badge-tile .sub2 { -webkit-line-clamp: unset; display: block; }
+.rewards { margin: 4px 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); text-align: left; display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.reward-head { display: flex; align-items: center; gap: 8px; font-size: 18px; }
+.pip { font-size: 30px; line-height: 1; }
+.mascot {
+  position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 64px); max-width: 456px; margin: 0 auto; z-index: 15;
+  display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 12px 14px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.15); font-size: 16px; animation: pop-in .4s ease-out;
+}
+.mascot .pip { font-size: 40px; }
+.mascot .grow { flex: 1; }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-12px); } }
+.wheel-wrap { position: relative; width: 240px; margin: 0 auto; }
+.wheel { width: 240px; height: 240px; display: block; }
+.pointer { position: absolute; top: -6px; left: 50%; transform: translateX(-50%); font-size: 22px; z-index: 1; color: var(--text); }
+.tile.lit { outline: 3px solid var(--text); outline-offset: 2px; }

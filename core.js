@@ -30,7 +30,8 @@
       thoughts: [],
       events: [],        // { type: 'open' | 'launch', at, actionId? }
       reviewsSeen: [],   // [7, 14]
-      prefs: { theme: 'auto', focus: false }, // theme: auto | light | dark
+      prefs: { theme: 'auto', focus: false, game: true, mascot: true }, // theme: auto | light | dark
+      game: { milestones: {}, quests: {}, spins: {} }, // earned once; keyed by id or day
       reminders: [],     // { id, text } in display order
       reminderIndex: 0,  // which reminder is showing
     };
@@ -91,7 +92,8 @@
     out.thoughts = s.thoughts || [];
     out.events = s.events || [];
     out.reviewsSeen = s.reviewsSeen || [];
-    out.prefs = Object.assign({ theme: 'auto', focus: false }, s.prefs || {});
+    out.prefs = Object.assign({ theme: 'auto', focus: false, game: true, mascot: true }, s.prefs || {});
+    out.game = Object.assign({ milestones: {}, quests: {}, spins: {} }, s.game || {});
     out.reminders = s.reminders || [];
     out.reminderIndex = s.reminderIndex || 0;
     out.goals.forEach((g, i) => {
@@ -500,6 +502,190 @@
     if (showing) s.reminderIndex = s.reminders.findIndex((x) => x.id === showing.reminder.id);
   }
 
+  // ---------- game layer: points, levels, streaks, quests, daily spin, milestones, records ----------
+  // Points are derived from attempts, so finishing twice can never award twice.
+
+  const POINTS = { start: 5, finished: 20, progress: 10, stuck: 5 };
+  const LEVELS = [0, 50, 150, 300, 500, 800, 1200, 1700, 2300, 3000, 4000];
+  const LEVEL_NAMES = ['Sprout', 'Starter', 'Mover', 'Builder', 'Climber', 'Explorer', 'Pathfinder', 'Trailblazer', 'Navigator', 'Captain', 'Legend'];
+  const SPIN_PRIZES = [5, 10, 15, 10, 20, 25];
+  const QUESTS = [
+    { id: 'start1', text: 'Start any task', bonus: 15, done: (t) => t.starts >= 1 },
+    { id: 'start2', text: 'Start two tasks today', bonus: 20, done: (t) => t.starts >= 2 },
+    { id: 'finish1', text: 'Finish one step', bonus: 25, done: (t) => t.finished >= 1 },
+    { id: 'progress1', text: 'Save your place on something', bonus: 15, done: (t) => t.progress >= 1 },
+    { id: 'park1', text: 'Park a thought instead of acting on it', bonus: 15, done: (t) => t.parked >= 1 },
+  ];
+  const MILESTONES = [
+    { id: 'first-start', icon: '🌅', name: 'First start', hint: 'Press Start once', test: (m) => m.starts >= 1 },
+    { id: 'first-step', icon: '✅', name: 'First step done', hint: 'Finish a step', test: (m) => m.finished >= 1 },
+    { id: 'honest', icon: '🤝', name: 'Honest check-in', hint: "Say when you didn't start", test: (m) => m.stuck >= 1 },
+    { id: 'parked', icon: '💡', name: 'Thought parked', hint: 'Park a stray thought', test: (m) => m.parked >= 1 },
+    { id: 'ten', icon: '🔟', name: 'Ten starts', hint: 'Start 10 times', test: (m) => m.starts >= 10 },
+    { id: 'streak3', icon: '🔥', name: '3-day streak', hint: 'Start on 3 days in a row', test: (m) => m.bestStreak >= 3 },
+    { id: 'comeback', icon: '🔁', name: 'Came back', hint: 'Start again after 3+ days away', test: (m) => m.comeback },
+    { id: 'level3', icon: '🚀', name: 'Level 3', hint: 'Reach level 3', test: (m) => m.level >= 3 },
+    { id: 'quarter', icon: '🏅', name: '25 starts', hint: 'Start 25 times', test: (m) => m.starts >= 25 },
+    { id: 'streak7', icon: '🌟', name: '7-day streak', hint: 'Start on 7 days in a row', test: (m) => m.bestStreak >= 7 },
+    { id: 'fifty', icon: '🏆', name: '50 starts', hint: 'Start 50 times', test: (m) => m.starts >= 50 },
+  ];
+
+  function dayKey(t) {
+    const d = new Date(t);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function shiftDay(key, n) {
+    const d = new Date(key + 'T12:00:00');
+    d.setDate(d.getDate() + n);
+    return dayKey(d.getTime());
+  }
+
+  // Every point ever earned, with when and why.
+  function pointsLog(s) {
+    const log = [];
+    for (const a of s.attempts) {
+      log.push({ at: a.startedAt, points: POINTS.start, reason: 'Started' });
+      if (a.outcome) log.push({ at: a.endedAt || a.startedAt, points: POINTS[a.outcome], reason: a.outcome === 'finished' ? 'Step done' : a.outcome === 'progress' ? 'Some progress' : 'Honest check-in' });
+    }
+    for (const q of Object.values(s.game.quests)) log.push({ at: q.at, points: q.bonus, reason: 'Daily quest' });
+    for (const sp of Object.values(s.game.spins)) log.push({ at: sp.at, points: sp.points, reason: 'Daily spin' });
+    return log;
+  }
+
+  function totalPoints(s) {
+    return pointsLog(s).reduce((n, x) => n + x.points, 0);
+  }
+
+  // Points for one attempt so far (shown on the Saved screen).
+  function attemptPoints(a) {
+    return POINTS.start + (a.outcome ? POINTS[a.outcome] : 0);
+  }
+
+  function levelInfo(points) {
+    let i = 0;
+    while (i + 1 < LEVELS.length && points >= LEVELS[i + 1]) i++;
+    const next = LEVELS[i + 1] != null ? LEVELS[i + 1] : null;
+    return { level: i + 1, name: LEVEL_NAMES[i], points, floor: LEVELS[i], next };
+  }
+
+  // A streak counts days with at least one start. Today still counts as "alive" until it ends.
+  function streaks(s, now) {
+    const days = new Set(s.attempts.map((a) => dayKey(a.startedAt)));
+    const today = dayKey(now);
+    let cursor = days.has(today) ? today : shiftDay(today, -1);
+    let current = 0;
+    while (days.has(cursor)) { current++; cursor = shiftDay(cursor, -1); }
+    const sorted = [...days].sort();
+    let best = 0, run = 0, prev = null, comeback = false;
+    for (const d of sorted) {
+      if (prev && shiftDay(prev, 1) === d) run++;
+      else {
+        if (prev && (new Date(d) - new Date(prev)) / DAY >= 3) comeback = true;
+        run = 1;
+      }
+      if (run > best) best = run;
+      prev = d;
+    }
+    return { current, best, startedToday: days.has(today), comeback };
+  }
+
+  function todayCounts(s, now) {
+    const k = dayKey(now);
+    const atts = s.attempts.filter((a) => dayKey(a.startedAt) === k);
+    return {
+      starts: atts.length,
+      finished: atts.filter((a) => a.outcome === 'finished').length,
+      progress: atts.filter((a) => a.outcome === 'progress').length,
+      parked: s.thoughts.filter((t) => dayKey(t.at) === k).length,
+    };
+  }
+
+  // One quest per day, picked by date so it stays the same all day.
+  function dailyQuest(s, now) {
+    const k = dayKey(now);
+    let hash = 0;
+    for (const ch of k) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    const q = QUESTS[hash % QUESTS.length];
+    const claimed = s.game.quests[k];
+    return { id: q.id, text: q.text, bonus: q.bonus, complete: q.done(todayCounts(s, now)), claimed: !!claimed };
+  }
+
+  // Awards today's quest bonus once, when it is complete. Returns the bonus or 0.
+  function claimQuest(s, now) {
+    const q = dailyQuest(s, now);
+    if (!q.complete || q.claimed) return 0;
+    s.game.quests[dayKey(now)] = { id: q.id, bonus: q.bonus, at: now };
+    return q.bonus;
+  }
+
+  // The daily spin unlocks after the first start of the day.
+  function canSpin(s, now) {
+    return todayCounts(s, now).starts >= 1 && !s.game.spins[dayKey(now)];
+  }
+
+  function spin(s, now, rand) {
+    if (!canSpin(s, now)) return null;
+    const index = Math.floor((rand == null ? Math.random() : rand) * SPIN_PRIZES.length) % SPIN_PRIZES.length;
+    const points = SPIN_PRIZES[index];
+    s.game.spins[dayKey(now)] = { points, at: now };
+    return { index, points };
+  }
+
+  function milestoneStats(s, now) {
+    const st = streaks(s, now);
+    return {
+      starts: s.attempts.length,
+      finished: s.attempts.filter((a) => a.outcome === 'finished').length,
+      stuck: s.attempts.filter((a) => a.outcome === 'stuck').length,
+      parked: s.thoughts.length,
+      bestStreak: st.best,
+      comeback: st.comeback,
+      level: levelInfo(totalPoints(s)).level,
+    };
+  }
+
+  // Awards any newly reached milestones (each only once) and returns them.
+  function checkMilestones(s, now) {
+    const m = milestoneStats(s, now);
+    const fresh = [];
+    for (const def of MILESTONES) {
+      if (!s.game.milestones[def.id] && def.test(m)) {
+        s.game.milestones[def.id] = now;
+        fresh.push(def);
+      }
+    }
+    return fresh;
+  }
+
+  function milestoneList(s) {
+    return MILESTONES.map((d) => ({ id: d.id, icon: d.icon, name: d.name, hint: d.hint, earnedAt: s.game.milestones[d.id] || null }));
+  }
+
+  // Personal records board: your own best days and weeks, never other people.
+  function records(s) {
+    const byDay = {};
+    for (const x of pointsLog(s)) { const k = dayKey(x.at); byDay[k] = (byDay[k] || 0) + x.points; }
+    const days = Object.entries(byDay).map(([day, points]) => ({ day, points })).sort((a, b) => b.points - a.points || (a.day < b.day ? 1 : -1));
+    const byWeek = {};
+    for (const { day, points } of days) {
+      const d = new Date(day + 'T12:00:00');
+      d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+      const wk = dayKey(d.getTime());
+      byWeek[wk] = (byWeek[wk] || 0) + points;
+    }
+    const weeks = Object.entries(byWeek).map(([week, points]) => ({ week, points })).sort((a, b) => b.points - a.points);
+    return { topDays: days.slice(0, 5), bestWeek: weeks[0] || null };
+  }
+
+  // Where the current step sits among a goal's known steps.
+  function stepMap(s, goalId) {
+    const all = goalActions(s, goalId);
+    const done = all.filter((a) => a.done).length;
+    const cur = all.find((a) => !a.done);
+    return { done, total: all.length, position: cur ? done + 1 : done };
+  }
+
   // ---------- return flow and evidence ----------
 
   // Records an app open and reports what kind of welcome to show.
@@ -595,6 +781,8 @@
     start, recordLaunch, finish, setNextStep, makeSmaller, endSession,
     parkThought, thoughtsFor, keepThought, deleteThought, thoughtToGoal,
     currentReminder, nextReminder, addReminder, updateReminder, deleteReminder, moveReminder,
+    POINTS, SPIN_PRIZES, dayKey, pointsLog, totalPoints, attemptPoints, levelInfo, streaks, todayCounts,
+    dailyQuest, claimQuest, canSpin, spin, checkMilestones, milestoneList, records, stepMap,
     recordOpen, passedDeadlines, today, dueReview, reviewStats,
     formatDate, formatElapsed, isUrl, daysUntil,
   };
