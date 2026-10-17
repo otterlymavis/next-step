@@ -272,7 +272,8 @@
   function render() {
     clearInterval(timer);
     timer = null;
-    document.querySelectorAll('.sheet,.scrim').forEach((x) => x.remove());
+    // A confirmation belongs to the screen it was shown on; actions show theirs after rendering.
+    document.querySelectorAll('.sheet,.scrim,.toast').forEach((x) => x.remove());
     applyPrefs();
     const screen = screenFor();
     app.replaceChildren(screen);
