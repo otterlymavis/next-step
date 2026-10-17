@@ -8,6 +8,8 @@
   const WELCOME_BACK_DAYS = 2;
   const LONG_ABSENCE_DAYS = 21;
   const MAX_ALTERNATIVES = 3;
+  const GOAL_ICONS = ['📘', '💻', '🎸', '🧹', '🏃', '🎨', '🧪', '✍️', '🎮', '🌱', '🍳', '🧠', '📐', '🎧', '🧺', '⭐'];
+  const GOAL_HUES = [160, 210, 28, 280, 340, 95];
 
   let idCounter = 0;
   function uid(prefix) {
@@ -34,7 +36,7 @@
   // Example goals from PLAN.md, used as editable placeholders.
   function seedState(now) {
     const s = emptyState(now);
-    const ac = addGoal(s, { name: 'Automatic Control' }, now);
+    const ac = addGoal(s, { name: 'Automatic Control', icon: '📐', hue: 210 }, now);
     addAction(s, ac.id, {
       text: 'Resume lecture 4 and watch the next five minutes',
       small: 'Watch five minutes',
@@ -43,7 +45,7 @@
     setCheckpoint(s, s.actions[s.actions.length - 1].id, 'Lecture 4 · Resume at 12:40', now);
     addAction(s, ac.id, { text: 'Start lecture 5 and watch the first five minutes', small: 'Watch five minutes' });
 
-    const c = addGoal(s, { name: 'C — Pointers' }, now + 1);
+    const c = addGoal(s, { name: 'C — Pointers', icon: '💻', hue: 160 }, now + 1);
     addAction(s, c.id, {
       text: 'Open exercise 3 and read the first question',
       small: 'Read the first question',
@@ -51,7 +53,7 @@
     });
     setCheckpoint(s, s.actions[s.actions.length - 1].id, 'Exercise 3 · the saved question', now);
 
-    const g = addGoal(s, { name: 'Guitar' }, now + 2);
+    const g = addGoal(s, { name: 'Guitar', icon: '🎸', hue: 28 }, now + 2);
     addAction(s, g.id, {
       text: 'Pick up the guitar and play through the song you are learning',
       small: 'Play for five minutes',
@@ -86,6 +88,10 @@
     out.thoughts = s.thoughts || [];
     out.events = s.events || [];
     out.reviewsSeen = s.reviewsSeen || [];
+    out.goals.forEach((g, i) => {
+      if (!g.icon) g.icon = GOAL_ICONS[i % GOAL_ICONS.length];
+      if (g.hue == null) g.hue = GOAL_HUES[i % GOAL_HUES.length];
+    });
     return out;
   }
 
@@ -131,6 +137,8 @@
     const g = {
       id: uid('g'),
       name: (fields.name || '').trim() || 'Untitled goal',
+      icon: fields.icon || GOAL_ICONS[s.goals.length % GOAL_ICONS.length],
+      hue: fields.hue != null ? fields.hue : GOAL_HUES[s.goals.length % GOAL_HUES.length],
       status: fields.status || 'active', // active | paused | later
       deadline: fields.deadline || null, // 'YYYY-MM-DD', user-entered only
       deadlineLabel: fields.deadlineLabel || '',
@@ -526,7 +534,7 @@
   }
 
   const api = {
-    SCHEMA, DAY, emptyState, seedState, parseState, normalize,
+    SCHEMA, DAY, GOAL_ICONS, GOAL_HUES, emptyState, seedState, parseState, normalize,
     goalById, actionById, goalActions, currentAction, currentAttempt, suspendedAttemptFor,
     addGoal, addAction, setCheckpoint, checkpointFor, setGoalStatus, deleteGoal,
     eligibleActions, goalsNeedingNext, ensureRecommendation, alternatives, chooseAlternative,
